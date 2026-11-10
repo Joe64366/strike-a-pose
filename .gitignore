@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Raw Mixamo animation downloads (Adobe terms: do not redistribute)
+/data/mixamo/

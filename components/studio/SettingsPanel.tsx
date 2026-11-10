@@ -7,6 +7,8 @@ import { createPortal } from "react-dom";
 import { Segmented, Switch } from "@/components/ui/Segmented";
 import {
   BACKGROUNDS,
+  BODY_COLORS,
+  OUTLINE_COLORS,
   settingsStore,
   stagePalette,
   useScheme,
@@ -78,7 +80,7 @@ export function SettingsPanel({ anchor, onClose }: { anchor: SettingsAnchor; onC
       initial={{ opacity: 0, scale: 0.94 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.14 } }}
-      className="menu-surface fixed z-[80] w-[320px] max-w-[calc(100vw-24px)] rounded-[18px] p-4 text-label"
+      className="menu-surface fixed z-[80] max-h-[calc(100dvh-24px)] w-[320px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-[18px] p-4 text-label"
     >
       <header className="mb-4 flex items-center justify-between">
         <h2 className="text-[15px] font-semibold tracking-[-0.01em]">Settings</h2>
@@ -105,7 +107,7 @@ export function SettingsPanel({ anchor, onClose }: { anchor: SettingsAnchor; onC
         />
       </Section>
 
-      <Section title="Background">
+      <Section title="Stage">
         <div role="radiogroup" aria-label="Background" className="grid grid-cols-4 gap-x-1 gap-y-3">
           {BACKGROUNDS.map((b) => {
             const on = settings.background === b.id;
@@ -152,27 +154,58 @@ export function SettingsPanel({ anchor, onClose }: { anchor: SettingsAnchor; onC
             );
           })}
         </div>
-      </Section>
-
-      <Section title="Stage" last>
-        <div className="flex flex-col gap-3">
+        <div className="mt-3">
           <Row label="Floor grid">
             <Switch label="Floor grid" on={settings.grid} onChange={(grid) => settingsStore.set({ grid })} />
           </Row>
+        </div>
+      </Section>
+
+      <Section title="Mannequin">
+        <div className="flex flex-col gap-3.5">
+          <ColorRow
+            label="Body"
+            value={settings.bodyColor}
+            options={BODY_COLORS}
+            onChange={(bodyColor) => settingsStore.set({ bodyColor })}
+          />
           <div>
-            <p className="mb-1.5 text-[13px]">Outline weight</p>
+            <p className="mb-1.5 text-[13px]">Outline</p>
             <Segmented<OutlineWeight>
               label="Outline weight"
               value={settings.outlineWeight}
               onChange={(outlineWeight) => settingsStore.set({ outlineWeight })}
               options={[
+                { value: "off", label: "Off" },
                 { value: "thin", label: "Thin" },
                 { value: "regular", label: "Regular" },
                 { value: "bold", label: "Bold" },
               ]}
             />
           </div>
+          {/* Colour only matters while there's a line to colour. */}
+          <div
+            className={`transition-opacity duration-200 ${settings.outlineWeight === "off" ? "pointer-events-none opacity-35" : ""}`}
+            aria-disabled={settings.outlineWeight === "off"}
+          >
+            <ColorRow
+              label="Outline color"
+              value={settings.outlineColor}
+              options={OUTLINE_COLORS}
+              onChange={(outlineColor) => settingsStore.set({ outlineColor })}
+            />
+          </div>
         </div>
+      </Section>
+
+      <Section title="Prompt box" last>
+        <Row label="Pose ideas">
+          <Switch
+            label="Pose ideas"
+            on={settings.promptIdeas}
+            onChange={(promptIdeas) => settingsStore.set({ promptIdeas })}
+          />
+        </Row>
       </Section>
     </motion.div>,
     document.body,
@@ -186,6 +219,72 @@ function Section({ title, last, children }: { title: string; last?: boolean; chi
       {children}
     </section>
   );
+}
+
+/**
+ * A compact row of colour swatches; the chosen name shows beside the label
+ * (names also appear as tooltips), so the row stays one line.
+ */
+function ColorRow<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly { id: T; name: string; hex: string }[];
+  onChange: (id: T) => void;
+}) {
+  const current = options.find((o) => o.id === value);
+  return (
+    <div>
+      <p className="mb-2 flex items-baseline justify-between text-[13px]">
+        {label}
+        <span className="text-[12px] text-label-3">{current?.name}</span>
+      </p>
+      <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-2">
+        {options.map((o) => {
+          const on = o.id === value;
+          const light = isLight(o.hex);
+          return (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              aria-label={o.name}
+              data-tip={o.name}
+              onClick={() => onChange(o.id)}
+              className="rounded-full outline-none"
+            >
+              <span
+                className={`swatch flex size-7 items-center justify-center rounded-full ${on ? "swatch-on" : ""}`}
+                style={{ background: o.hex }}
+              >
+                {on && (
+                  <motion.span
+                    initial={{ scale: 0.5, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    transition={{ type: "spring", bounce: 0.35, duration: 0.3 }}
+                    className={light ? "text-[#1d1d1f]" : "text-white"}
+                  >
+                    <Check size={13} strokeWidth={3} aria-hidden />
+                  </motion.span>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function isLight(hex: string) {
+  const n = parseInt(hex.slice(1), 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150;
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {

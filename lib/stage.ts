@@ -4,8 +4,41 @@
  */
 
 export type Appearance = "system" | "light" | "dark";
-export type OutlineWeight = "thin" | "regular" | "bold";
+export type OutlineWeight = "off" | "thin" | "regular" | "bold";
 export type Scheme = "light" | "dark";
+
+/**
+ * Mannequin finishes: neutral clays first (best for value studies), then a
+ * few soft tints. "Charcoal" pairs with a light outline.
+ */
+export const BODY_COLORS = [
+  { id: "clay", name: "Clay", hex: "#e7e5e2" },
+  { id: "porcelain", name: "Porcelain", hex: "#f7f6f3" },
+  { id: "stone", name: "Stone", hex: "#b7b5b1" },
+  { id: "charcoal", name: "Charcoal", hex: "#55565c" },
+  { id: "sand", name: "Sand", hex: "#dcc7a8" },
+  { id: "terracotta", name: "Terracotta", hex: "#c98e72" },
+  { id: "sage", name: "Sage", hex: "#a9b9a2" },
+  { id: "sky", name: "Sky", hex: "#a8bdd3" },
+] as const;
+export type BodyColorId = (typeof BODY_COLORS)[number]["id"];
+
+/**
+ * Contour colours, after the pencils artists actually draw with: ink,
+ * graphite, sepia, non-photo blue, animator's red, and white for dark bodies.
+ */
+export const OUTLINE_COLORS = [
+  { id: "ink", name: "Ink", hex: "#0d0d0f" },
+  { id: "graphite", name: "Graphite", hex: "#4a4a50" },
+  { id: "sepia", name: "Sepia", hex: "#5a3d2b" },
+  { id: "blue", name: "Non-photo blue", hex: "#5b9bd5" },
+  { id: "red", name: "Red pencil", hex: "#d0453a" },
+  { id: "white", name: "White", hex: "#ffffff" },
+] as const;
+export type OutlineColorId = (typeof OUTLINE_COLORS)[number]["id"];
+
+export const bodyHex = (id: BodyColorId) => (BODY_COLORS.find((c) => c.id === id) ?? BODY_COLORS[0]).hex;
+export const outlineHex = (id: OutlineColorId) => (OUTLINE_COLORS.find((c) => c.id === id) ?? OUTLINE_COLORS[0]).hex;
 
 /**
  * Stage backgrounds. Soft, low-saturation tones (like Apple's wallpaper and
@@ -25,20 +58,27 @@ export const BACKGROUNDS = [
 
 export type BackgroundId = (typeof BACKGROUNDS)[number]["id"];
 
-export const OUTLINE_PX: Record<OutlineWeight, number> = { thin: 1.5, regular: 2.25, bold: 3.25 };
+export const OUTLINE_PX: Record<OutlineWeight, number> = { off: 0, thin: 1.5, regular: 2.25, bold: 3.25 };
 
 export interface Settings {
   appearance: Appearance;
   background: BackgroundId;
-  outlineWeight: OutlineWeight;
   grid: boolean;
+  bodyColor: BodyColorId;
+  outlineWeight: OutlineWeight;
+  outlineColor: OutlineColorId;
+  /** The suggestion chips above the prompt box. */
+  promptIdeas: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   appearance: "system",
   background: "studio",
-  outlineWeight: "regular",
   grid: true,
+  bodyColor: "clay",
+  outlineWeight: "regular",
+  outlineColor: "ink",
+  promptIdeas: true,
 };
 
 export const SETTINGS_KEY = "strike-a-pose:settings:v1";

@@ -1,5 +1,6 @@
 "use client";
 
+import { Sun } from "lucide-react";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -8,10 +9,11 @@ import { createPoseEntry, type PoseEntry } from "@/lib/poses";
 import { poseStore, usePoseStore } from "@/lib/poseStore";
 import { useMediaQuery } from "@/lib/useColorScheme";
 import { usePoseHistory } from "@/lib/usePoseHistory";
-import { stageColor, useScheme, useSettings } from "@/lib/settings";
+import { settingsStore, stageColor, useScheme, useSettings, type OutlineWeight } from "@/lib/settings";
 import { installDevHooks } from "@/lib/devHooks";
-import { useStoredFlag } from "@/lib/useStoredFlag";
+import { lightingUi, useLightingUi } from "@/lib/lighting";
 import { VIEW_ORDER, type ViewPreset, type ViewRequest } from "@/lib/views";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { TooltipLayer } from "@/components/ui/TooltipLayer";
 import { Composer, type ComposerHandle } from "./Composer";
 import { ControlsHint } from "./ControlsHint";
@@ -19,8 +21,8 @@ import { FocusToggle } from "./FocusToggle";
 import { HistoryControls } from "./HistoryControls";
 import { HoverLabel } from "./HoverLabel";
 import { JointInspector } from "./JointInspector";
+import { LightingPanel } from "./LightingPanel";
 import { LoadingVeil } from "./LoadingVeil";
-import { OutlineToggle } from "./OutlineToggle";
 import { CollapsedSidebarButtons, Sidebar, SIDEBAR_SPACE } from "./Sidebar";
 import { StatusPill } from "./StatusPill";
 import { UndoToast } from "./UndoToast";
@@ -49,7 +51,13 @@ export function Studio() {
   const [sceneReady, setSceneReady] = useState(false);
   const onSceneReady = useCallback(() => setSceneReady(true), []);
   const dismissToast = useCallback(() => setDeleted(null), []);
-  const [outline, setOutline] = useStoredFlag("strike-a-pose:outline", true);
+  // "O" flips the outline off and back to whatever weight it had.
+  const lastOutline = useRef<OutlineWeight>("regular");
+  const toggleOutline = useCallback(() => {
+    const { outlineWeight } = settingsStore.get();
+    if (outlineWeight !== "off") lastOutline.current = outlineWeight;
+    settingsStore.set({ outlineWeight: outlineWeight === "off" ? lastOutline.current : "off" });
+  }, []);
   const posingByHand = usePoseStore((s) => s.dragging);
   const jointSelected = usePoseStore((s) => s.selected !== null);
   const [settingsAnchor, setSettingsAnchor] = useState<SettingsAnchor | null>(null);
@@ -65,9 +73,20 @@ export function Studio() {
     poseStore.setViewOnly(on);
     if (on) {
       setSettingsAnchor(null);
+      lightingUi.set({ open: false, dragging: null });
       (document.activeElement as HTMLElement | null)?.blur();
     }
   }, []);
+
+  // Lighting mode: the lights appear in the scene and can be dragged; the
+  // body can't be posed meanwhile, so a missed grab never bends an arm.
+  const lightingOpen = useLightingUi((s) => s.open);
+  const setLighting = useCallback((open: boolean) => {
+    lightingUi.set({ open, dragging: null });
+    if (open) poseStore.select(null);
+    poseStore.setViewOnly(open || focusRef.current);
+  }, []);
+  const closeLighting = useCallback(() => setLighting(false), [setLighting]);
   const toggleSettings = useCallback((trigger: HTMLElement) => {
     setSettingsAnchor((cur) =>
       cur ? null : { rect: trigger.getBoundingClientRect(), returnFocus: trigger },
@@ -77,7 +96,7 @@ export function Studio() {
   // Apply the theme and stage colour app-wide (the boot script did the
   // first paint; this keeps them in sync with Settings and the OS).
   const scheme = useScheme();
-  const { background } = useSettings();
+  const { background, promptIdeas } = useSettings();
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.scheme = scheme;
@@ -119,6 +138,14 @@ export function Studio() {
     },
     [history, activeId, generation],
   );
+
+  // Deleting asks first (with the pose's name), then still offers Undo.
+  const [pendingDelete, setPendingDelete] = useState<PoseEntry | null>(null);
+  const cancelDelete = useCallback(() => setPendingDelete(null), []);
+  const confirmDelete = useCallback(() => {
+    if (pendingDelete) deleteEntry(pendingDelete);
+    setPendingDelete(null);
+  }, [pendingDelete, deleteEntry]);
 
   const undoDelete = useCallback(() => {
     if (!deleted) return;
@@ -164,7 +191,7 @@ export function Studio() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target.closest("input:not([type=range]), textarea, [contenteditable=true], [role=menu]")) return;
+      if (target.closest("input:not([type=range]), textarea, [contenteditable=true], [role=menu], [role=dialog], [role=alertdialog]")) return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
       if (mod && key === "z") {
@@ -185,18 +212,21 @@ export function Studio() {
         composer.current?.focus();
       } else if (e.key === "Escape") {
         if (focusRef.current) setFocusMode(false);
+        else if (lightingUi.get().open) setLighting(false);
         else poseStore.select(null);
+      } else if (key === "l" && target.tagName !== "INPUT") {
+        if (!focusRef.current) setLighting(!lightingUi.get().open);
       } else if (key === "h" && target.tagName !== "INPUT") {
         setFocusMode(!focusRef.current);
       } else if (preset && target.tagName !== "INPUT") {
         requestView(preset);
       } else if (key === "o" && target.tagName !== "INPUT") {
-        setOutline((on) => !on);
+        toggleOutline();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [requestView, setOutline, editing, setFocusMode]);
+  }, [requestView, toggleOutline, editing, setFocusMode, setLighting]);
 
   const contentInset = sidebarOpen && !isCompact && !focus ? SIDEBAR_SPACE : 0;
 
@@ -209,7 +239,6 @@ export function Studio() {
             onUserInteract={onUserInteract}
             onReady={onSceneReady}
             leftInset={contentInset}
-            outline={outline}
           />
         </div>
         <LoadingVeil loaded={sceneReady} />
@@ -245,7 +274,7 @@ export function Studio() {
               hydrated={history.hydrated}
               activeId={activeId}
               onSelect={selectEntry}
-              onDelete={deleteEntry}
+              onDelete={setPendingDelete}
               onRename={history.rename}
               onTogglePin={history.togglePin}
               onResetPose={editing.resetPose}
@@ -281,7 +310,8 @@ export function Studio() {
                 onTogglePin={history.togglePin}
                 result={generation.lastResult}
               />
-              <ControlsHint visible={!hasInteracted} />
+              {/* Posing is paused in lighting mode, so its hint would mislead. */}
+              <ControlsHint visible={!hasInteracted && !lightingOpen} />
             </div>
             <div className="flex items-center gap-2 justify-self-end">
               <HistoryControls
@@ -290,13 +320,35 @@ export function Studio() {
                 onUndo={editing.undo}
                 onRedo={editing.redo}
               />
-              <OutlineToggle on={outline} onChange={setOutline} />
               <ViewSwitcher value={view} onChange={requestView} />
+              <button
+                type="button"
+                onClick={() => setLighting(!lightingOpen)}
+                aria-pressed={lightingOpen}
+                aria-label="Lighting"
+                data-tip="Lighting"
+                data-tip-kbd="L"
+                className={`pressable pointer-events-auto flex size-9 items-center justify-center rounded-full ${
+                  lightingOpen ? "bg-accent text-on-accent shadow-[var(--shadow-float)]" : "material text-label-2 hover:text-label"
+                }`}
+              >
+                <Sun size={17} aria-hidden />
+              </button>
             </div>
           </div>
 
           <div className="relative flex min-h-0 flex-1 items-start justify-end px-3">
+            {/* Opening lighting deselects the joint, so only one of these shows. */}
             <JointInspector className="w-[272px] max-md:absolute max-md:inset-x-3 max-md:bottom-2 max-md:w-auto" />
+            <AnimatePresence initial={false}>
+              {lightingOpen && (
+                <LightingPanel
+                  key="lighting"
+                  onClose={closeLighting}
+                  className="w-[300px] max-md:absolute max-md:inset-x-3 max-md:bottom-2 max-md:w-auto"
+                />
+              )}
+            </AnimatePresence>
           </div>
 
           <div className="flex flex-col items-center gap-3 px-3 pt-3 pb-3 sm:pb-5">
@@ -304,7 +356,7 @@ export function Studio() {
             <Composer
               ref={composer}
               onSubmit={submitPrompt}
-              showSuggestions={!active && !jointSelected}
+              showSuggestions={promptIdeas && !active && !jointSelected}
               placeholder={active ? `Refine “${active.title}”…` : "Describe a pose…"}
               busy={active?.status === "posing"}
               error={active ? generation.errors[active.id] : undefined}
@@ -318,6 +370,13 @@ export function Studio() {
         <FocusToggle focus={focus} onChange={setFocusMode} />
       </main>
       <TooltipLayer />
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={`Delete “${pendingDelete?.title ?? ""}”?`}
+        message="This pose and its prompt history will be removed."
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
     </MotionConfig>
   );
 }

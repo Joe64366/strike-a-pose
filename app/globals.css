@@ -178,6 +178,39 @@ button:focus-visible > .swatch {
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
 }
 
+/* Name tag above each light bulb (lighting mode). */
+.light-badge {
+  font: 600 11px/1 var(--font-sans);
+  color: #1d1d1f;
+  background: rgb(255 255 255 / 0.92);
+  padding: 4px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.22), 0 0 0 0.5px rgb(0 0 0 / 0.08);
+  transition: opacity 0.2s, background-color 0.2s, color 0.2s;
+}
+.light-badge-on {
+  color: #fff;
+  background: var(--accent);
+}
+
+/* Where a light is, in words, while you drag it. */
+.light-readout {
+  font: 500 12px/1 var(--font-sans);
+  color: #fff;
+  background: rgb(0 0 0 / 0.66);
+  padding: 5px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(8px);
+}
+
+/* Lighting panel's direction ball: focus ring for keyboard nudging. */
+.light-ball:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
 /* Ring at the selected joint's pivot. */
 .pivot-marker {
   width: 14px;

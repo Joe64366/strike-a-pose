@@ -23,12 +23,12 @@ export class ProviderError extends Error {
 const TIMEOUT_MS = 9_000;
 const SYSTEM = systemPrompt();
 
-async function postJson(provider: Provider, url: string, headers: Record<string, string>, body: unknown) {
+async function postJson(provider: Provider, url: string, headers: Record<string, string>, body: unknown, timeout = TIMEOUT_MS) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeout),
     cache: "no-store",
   });
   const text = await res.text();
@@ -73,12 +73,22 @@ async function callGroq(user: string): Promise<AiPose> {
   return parsePose("groq", data?.choices?.[0]?.message?.content);
 }
 
-async function callGemini(user: string): Promise<AiPose> {
+/**
+ * Flash follows the body-mechanics rules (knees that actually reach the
+ * floor); Flash-Lite is faster but often squats when asked to kneel. So
+ * Flash first, and Lite only if Flash is overloaded, rate-limited or slow.
+ */
+const GEMINI_MODELS = [
+  { model: "gemini-3.5-flash", timeout: 6_000 },
+  { model: "gemini-3.5-flash-lite", timeout: TIMEOUT_MS },
+];
+
+async function callGeminiModel(user: string, model: string, timeout: number): Promise<AiPose> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new ProviderError("gemini", 500, "GEMINI_API_KEY is not set");
   const data = await postJson(
     "gemini",
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     { "x-goog-api-key": key },
     {
       systemInstruction: { parts: [{ text: SYSTEM }] },
@@ -89,9 +99,23 @@ async function callGemini(user: string): Promise<AiPose> {
         thinkingConfig: { thinkingLevel: "minimal" },
       },
     },
+    timeout,
   );
   const text = data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("");
   return parsePose("gemini", text);
+}
+
+async function callGemini(user: string): Promise<AiPose> {
+  let last: unknown;
+  for (const { model, timeout } of GEMINI_MODELS) {
+    try {
+      return await callGeminiModel(user, model, timeout);
+    } catch (e) {
+      last = e;
+      console.warn(`[pose] ${model}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  throw last;
 }
 
 /** If Groq (normally ~1.3 s) hasn't answered by now, start Gemini alongside it. */

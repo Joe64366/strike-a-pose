@@ -1,5 +1,9 @@
+import { findReferences, formatReference, type LibraryPose } from "@/lib/ai/library";
+import poseLibrary from "@/lib/ai/poseLibrary.json";
 import { generatePose, ProviderError } from "@/lib/ai/providers";
-import { sanitizeAiPose, userPrompt } from "@/lib/ai/spec";
+import { pickVariation, sanitizeAiPose, userPrompt } from "@/lib/ai/spec";
+
+const LIBRARY = poseLibrary as unknown as LibraryPose[];
 
 /**
  * POST /api/pose — turn a description into a pose.
@@ -48,9 +52,22 @@ export async function POST(request: Request) {
     ? body.previous.filter((p): p is string => typeof p === "string").slice(-3).map((p) => p.slice(0, MAX_PROMPT))
     : [];
 
+  // Real poses related to the request, for the model to learn from (a
+  // refinement needs fewer: the current pose already sets the scene).
+  // The variation is random, so the same request twice gives two different poses.
+  const references = findReferences(LIBRARY, prompt, current ? 2 : 3);
+  const variation = current ? "" : pickVariation();
+
   try {
-    const { pose, provider } = await generatePose(userPrompt(prompt, current, previous));
-    return Response.json({ pose, provider, ms: Math.round(performance.now() - started) });
+    const { pose, provider } = await generatePose(
+      userPrompt(prompt, current, previous, references.map(formatReference), variation),
+    );
+    return Response.json({
+      pose,
+      provider,
+      ms: Math.round(performance.now() - started),
+      references: references.map((r) => r.id),
+    });
   } catch (e) {
     const status = e instanceof ProviderError ? e.status : 500;
     return fail(

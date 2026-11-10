@@ -18,6 +18,7 @@ import {
 } from "three";
 import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
+import { LIGHT_IDS, LIGHT_UNIT, lightingStore, TOON_CUTS } from "@/lib/lighting";
 import { constrain, IDENTITY, toQuat, type PoseData } from "@/lib/poseMath";
 import { poseStore, usePoseStore } from "@/lib/poseStore";
 import { OutlineMaterial } from "./outlineMaterial";
@@ -77,11 +78,15 @@ export function Mannequin({
   onReady,
   outline = true,
   outlineWidth = 2.25,
+  outlineColor = "#0d0d0f",
+  bodyColor = "#e7e5e2",
 }: {
   onReady?: () => void;
   outline?: boolean;
   /** Contour width in CSS pixels. */
   outlineWidth?: number;
+  outlineColor?: string;
+  bodyColor?: string;
 }) {
   const { scene } = useGLTF(MODEL_URL);
   const place = useRef<Group>(null);
@@ -91,7 +96,7 @@ export function Mannequin({
     onReady?.();
   }, [onReady]);
 
-  const { model, scale, offset, rig, setOutlineVisible, setOutlineWidth } = useMemo(() => {
+  const { model, scale, offset, rig, setOutlineVisible, setOutlineWidth, setColors } = useMemo(() => {
     // Clone so posing never mutates the cached GLTF (and StrictMode double
     // mounts stay independent).
     const model = cloneSkinned(scene);
@@ -148,11 +153,16 @@ export function Mannequin({
     const setOutlineWidth = (px: number) => {
       line.px = px;
     };
-    return { model, scale, offset, rig, setOutlineVisible, setOutlineWidth };
+    const setColors = (body: string, contour: string) => {
+      material.color.set(body);
+      outlineMaterial.uniforms.color.value.set(contour);
+    };
+    return { model, scale, offset, rig, setOutlineVisible, setOutlineWidth, setColors };
   }, [scene]);
 
   useEffect(() => setOutlineVisible(outline), [outline, setOutlineVisible]);
   useEffect(() => setOutlineWidth(outlineWidth), [outlineWidth, setOutlineWidth]);
+  useEffect(() => setColors(bodyColor, outlineColor), [bodyColor, outlineColor, setColors]);
 
   useEffect(() => {
     if (rig) poseStore.setFrames(rig.frames);
@@ -167,6 +177,7 @@ export function Mannequin({
   }, [rig]);
 
   useTint(rig);
+  useToonShading(rig);
   usePoseDriver(rig, place, ground);
   const handlers = usePosingGestures(rig);
 
@@ -256,6 +267,33 @@ function useTint(rig: Rig | null) {
     const apply = () => rig.setTint(poseStore.get());
     apply();
     return poseStore.subscribe(apply);
+  }, [rig]);
+}
+
+/**
+ * Ambient light received by a surface at "ambient" 1 (environment + sky),
+ * relative to its colour. Places the toon cut-offs above the shadow floor.
+ */
+const AMBIENT_RECEIVED = 0.55;
+
+/** Lighting's value-study mode → the body shader's bands. */
+function useToonShading(rig: Rig | null) {
+  useEffect(() => {
+    if (!rig) return;
+    const apply = () => {
+      const { shading, ambient, lights } = lightingStore.get();
+      const strongest = Math.max(0.01, ...LIGHT_IDS.map((id) => (lights[id].on ? lights[id].intensity : 0)));
+      // Light received from the strongest light, square on (Lambert /π).
+      const full = (strongest * LIGHT_UNIT) / Math.PI;
+      const floor = ambient * AMBIENT_RECEIVED;
+      rig.setToon(
+        shading === "two" ? 2 : shading === "three" ? 3 : 0,
+        [floor + TOON_CUTS.two * full, floor + TOON_CUTS.threeLow * full, floor + TOON_CUTS.threeHigh * full],
+        ambient,
+      );
+    };
+    apply();
+    return lightingStore.subscribe(apply);
   }, [rig]);
 }
 

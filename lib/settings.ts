@@ -1,9 +1,19 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { BACKGROUNDS, DEFAULT_SETTINGS, SETTINGS_KEY, type Scheme, type Settings } from "./stage";
+import {
+  BACKGROUNDS,
+  BODY_COLORS,
+  DEFAULT_SETTINGS,
+  OUTLINE_COLORS,
+  SETTINGS_KEY,
+  type Scheme,
+  type Settings,
+} from "./stage";
 
 export * from "./stage";
+
+const LEGACY_OUTLINE_KEY = "strike-a-pose:outline";
 
 /* ---------------------------------------------------------------- store */
 
@@ -16,8 +26,14 @@ function load() {
   loaded = true;
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) settings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const saved = raw ? (JSON.parse(raw) as Partial<Settings>) : {};
+    settings = { ...DEFAULT_SETTINGS, ...saved };
+    // The outline used to have its own on/off toggle; it's now "Off" here.
+    if (localStorage.getItem(LEGACY_OUTLINE_KEY) === "0" && !raw?.includes('"off"')) settings.outlineWeight = "off";
+    localStorage.removeItem(LEGACY_OUTLINE_KEY);
     if (!BACKGROUNDS.some((b) => b.id === settings.background)) settings.background = "studio";
+    if (!BODY_COLORS.some((c) => c.id === settings.bodyColor)) settings.bodyColor = "clay";
+    if (!OUTLINE_COLORS.some((c) => c.id === settings.outlineColor)) settings.outlineColor = "ink";
   } catch {}
 }
 

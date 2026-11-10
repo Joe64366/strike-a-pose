@@ -1,5 +1,6 @@
 import { fingerJoints, HAND_SHAPES, handShapeAngles, type HandShape, type JointId } from "../joints";
 import { compose, decompose, type PoseData, type RigFrames } from "../poseMath";
+import { naturalize } from "./naturalize";
 import { AI_JOINT_IDS, type AiAngles, type AiHandShape, type AiPose } from "./spec";
 
 const SIDES = ["left", "right"] as const;
@@ -10,11 +11,15 @@ const SIDES = ["left", "right"] as const;
  * always anatomically possible whatever the model said.
  */
 export function aiToPose(
-  ai: AiPose,
+  raw: AiPose,
   frames: RigFrames,
   base: PoseData,
   measureLowest: (pose: PoseData) => number | null,
+  { natural = true }: { natural?: boolean } = {},
 ): PoseData {
+  // Fill in what makes a body look alive (weight shift, spine curve, soft
+  // joints) before turning angles into rotations.
+  const ai = natural ? naturalize(raw) : raw;
   const pose: PoseData = {};
 
   for (const id of AI_JOINT_IDS) {

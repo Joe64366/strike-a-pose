@@ -43,6 +43,14 @@ export interface Rig {
   vertexJoint: Uint8Array;
   /** Per-joint highlight strength (0–1), read by the body shader. */
   tint: { value: Float32Array };
+  /**
+   * Value-study shading. `levels` 0 = smooth; 2 or 3 = flat bands of light,
+   * (half-tone,) and shadow. `cuts` = [two-tone, three-tone low, high] as
+   * light received relative to the surface colour; `ambient` 0–1 lifts the
+   * shadow band.
+   */
+  toon: { levels: { value: number }; cuts: { value: Vector3 }; ambient: { value: number } };
+  setToon: (levels: 0 | 2 | 3, cuts: [number, number, number], ambient: number) => void;
   /** CPU skinning. Returns the lowest world Y; optionally refreshes the pick mesh. */
   skin: (opts: { step?: number; updatePick?: boolean }) => number;
   /** Ease bones toward `pose` (or snap if `instant`). Returns true while still moving. */
@@ -130,9 +138,13 @@ export function buildRig(model: Object3D, material: MeshStandardMaterial): Rig |
   // --- Hover/selection tint, injected into the standard material ---
   const tint = { value: new Float32Array(TINT_SLOTS) };
   const tintColor = { value: new Color("#0a84ff") };
+  const toon: Rig["toon"] = { levels: { value: 0 }, cuts: { value: new Vector3(0.3, 0.1, 0.5) }, ambient: { value: 0.45 } };
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTint = tint;
     shader.uniforms.uTintColor = tintColor;
+    shader.uniforms.uToon = toon.levels;
+    shader.uniforms.uToonCuts = toon.cuts;
+    shader.uniforms.uToonAmbient = toon.ambient;
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
@@ -151,12 +163,30 @@ export function buildRig(model: Object3D, material: MeshStandardMaterial): Rig |
         "#include <common>",
         `#include <common>
          uniform vec3 uTintColor;
-         varying float vTint;`,
+         varying float vTint;
+         uniform float uToon;
+         uniform vec3 uToonCuts;
+         uniform float uToonAmbient;`,
       )
       .replace(
         "#include <color_fragment>",
         `#include <color_fragment>
          diffuseColor.rgb = mix(diffuseColor.rgb, uTintColor, vTint);`,
+      )
+      .replace(
+        "#include <opaque_fragment>",
+        `if (uToon > 0.5) {
+           // How much light reached this point, independent of the surface colour.
+           const vec3 W = vec3(0.2126, 0.7152, 0.0722);
+           float received = dot(outgoingLight, W) / max(dot(diffuseColor.rgb, W), 1e-3);
+           float level = uToon < 2.5
+             ? (received > uToonCuts.x ? 1.0 : 0.2 + uToonAmbient * 0.22)
+             : (received > uToonCuts.z ? 1.0 : received > uToonCuts.y ? 0.55 : 0.17 + uToonAmbient * 0.18);
+           // Keep the light's colour, flatten its value.
+           vec3 hue = outgoingLight / max(max(outgoingLight.r, max(outgoingLight.g, outgoingLight.b)), 1e-4);
+           outgoingLight = diffuseColor.rgb * level * mix(vec3(1.0), hue, 0.5);
+         }
+         #include <opaque_fragment>`,
       );
   };
   material.customProgramCacheKey = () => "mannequin-tint";
@@ -255,7 +285,13 @@ export function buildRig(model: Object3D, material: MeshStandardMaterial): Rig |
   const snapshot: Rig["snapshot"] = () => joints.map((j) => j.bone.quaternion.clone());
   const restore: Rig["restore"] = (snap) => joints.forEach((j, i) => j.bone.quaternion.copy(snap[i]));
 
-  return { joints, byId, frames, mesh: skinned, pick, vertexJoint, tint, skin, drive, setTint, applyRaw, snapshot, restore };
+  const setToon: Rig["setToon"] = (levels, cuts, ambient) => {
+    toon.levels.value = levels;
+    toon.cuts.value.set(...cuts);
+    toon.ambient.value = ambient;
+  };
+
+  return { joints, byId, frames, mesh: skinned, pick, vertexJoint, tint, toon, setToon, skin, drive, setTint, applyRaw, snapshot, restore };
 }
 
 /**

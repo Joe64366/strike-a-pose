@@ -1,21 +1,14 @@
 "use client";
 
-import { ArrowUp, CircleAlert, LoaderCircle, RotateCw } from "lucide-react";
+import { ArrowUp, CircleAlert, LoaderCircle, RotateCw, Shuffle } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { springSnappy } from "@/lib/motion";
+import { dealIdeas, IDEAS_SHOWN, PROMPT_IDEAS } from "@/lib/promptIdeas";
 
 export interface ComposerHandle {
   focus: () => void;
 }
-
-const SUGGESTIONS = [
-  "Crying on knees",
-  "Mid-sprint, leaning forward",
-  "Sitting cross-legged, reading",
-  "Looking back over shoulder",
-  "Superhero landing",
-];
 
 const MAX_LENGTH = 300;
 const MAX_ROWS_HEIGHT = 140;
@@ -42,6 +35,14 @@ export function Composer({
   const [value, setValue] = useState("");
   const textarea = useRef<HTMLTextAreaElement>(null);
   const canSend = value.trim().length > 0 && !busy;
+  // The same five stay put until you use one (or shuffle); then a fresh five.
+  // Starts from a fixed set so server and client render the same thing.
+  const [ideas, setIdeas] = useState<string[]>(() => PROMPT_IDEAS.slice(0, IDEAS_SHOWN));
+  const [dealt, setDealt] = useState(0);
+  const reshuffle = () => {
+    setIdeas((current) => dealIdeas(current));
+    setDealt((n) => n + 1);
+  };
 
   useImperativeHandle(ref, () => ({ focus: () => textarea.current?.focus() }), []);
 
@@ -82,20 +83,50 @@ export function Composer({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 6 }}
             transition={springSnappy}
-            className="flex flex-wrap justify-center gap-1.5"
-            aria-label="Suggested poses"
+            className="flex flex-wrap items-center justify-center gap-1.5"
+            aria-label="Pose ideas"
           >
-            {SUGGESTIONS.map((s) => (
-              <li key={s}>
-                <button
-                  type="button"
-                  onClick={() => submit(s)}
-                  className="material pressable h-8 rounded-full px-3.5 text-[13px] text-label-2 hover:text-label"
+            <AnimatePresence mode="popLayout" initial={false}>
+              {ideas.map((s, i) => (
+                <motion.li
+                  key={`${dealt}:${s}`}
+                  layout
+                  initial={{ opacity: 0, scale: 0.9, y: 4 }}
+                  animate={{ opacity: 1, scale: 1, y: 0, transition: { ...springSnappy, delay: i * 0.035 } }}
+                  exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.12 } }}
                 >
-                  {s}
-                </button>
-              </li>
-            ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      submit(s);
+                      reshuffle();
+                    }}
+                    className="material pressable h-8 rounded-full px-3.5 text-[13px] text-label-2 hover:text-label"
+                  >
+                    {s}
+                  </button>
+                </motion.li>
+              ))}
+            </AnimatePresence>
+            <motion.li layout key="shuffle">
+              <button
+                type="button"
+                onClick={reshuffle}
+                aria-label="New ideas"
+                data-tip="New ideas"
+                className="material pressable group/shuffle flex size-8 items-center justify-center rounded-full text-label-2 hover:text-label"
+              >
+                <motion.span
+                  key={dealt}
+                  initial={{ rotate: -180, scale: 0.8 }}
+                  animate={{ rotate: 0, scale: 1 }}
+                  transition={{ type: "spring", bounce: 0.3, duration: 0.45 }}
+                  className="flex"
+                >
+                  <Shuffle size={14} strokeWidth={2.2} aria-hidden />
+                </motion.span>
+              </button>
+            </motion.li>
           </motion.ul>
         )}
       </AnimatePresence>
