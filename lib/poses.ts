@@ -1,3 +1,6 @@
+import type { SavedView } from "./cameraViews";
+import type { Lighting } from "./lighting";
+import type { FisheyeLook } from "./perspective";
 import type { PoseData } from "./poseMath";
 
 export type PoseStatus = "posing" | "ready" | "error";
@@ -16,6 +19,12 @@ export interface PoseEntry {
   status: PoseStatus;
   /** Timestamp when pinned; pinned poses list newest-pinned first. */
   pinnedAt?: number;
+  /** Camera angles saved with this pose, oldest first. */
+  views?: SavedView[];
+  /** This pose's lighting (default lighting when missing). */
+  lighting?: Lighting;
+  /** This pose's fish-eye lens (off, with default settings, when missing). */
+  fisheye?: FisheyeLook;
 }
 
 export const MAX_TITLE_LENGTH = 60;

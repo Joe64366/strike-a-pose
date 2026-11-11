@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PoseData } from "@/lib/poseMath";
+import { withCurrentLook } from "@/lib/poseLook";
 import { createUntitledEntry, type PoseEntry } from "@/lib/poses";
 import { poseStore } from "@/lib/poseStore";
 import type { usePoseHistory } from "@/lib/usePoseHistory";
@@ -16,7 +17,7 @@ type Stacks = { undo: PoseData[]; redo: PoseData[] };
  * Connects hand-posing to saved poses:
  * - shows the active entry's pose (or the rest pose) on the figure
  * - saves every finished edit into the active entry
- * - editing the default pose creates an "Untitled pose" entry
+ * - editing the default pose creates an "Untitled pose" entry (keeping its look)
  * - keeps an undo/redo history per entry
  */
 export function usePoseEditing(
@@ -56,7 +57,7 @@ export function usePoseEditing(
       const { history, activeId, setActiveId } = latest.current;
       let id = activeId;
       if (!id) {
-        const entry = createUntitledEntry(next);
+        const entry = withCurrentLook(createUntitledEntry(next));
         history.add(entry);
         setActiveId(entry.id);
         id = entry.id;

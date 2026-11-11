@@ -1,17 +1,22 @@
 "use client";
 
-import { Sun } from "lucide-react";
+import { Axis3d, Camera, Sun, Timer } from "lucide-react";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { spring } from "@/lib/motion";
-import { createPoseEntry, type PoseEntry } from "@/lib/poses";
+import { createPoseEntry, createUntitledEntry, type PoseEntry } from "@/lib/poses";
+import { showLook, withCurrentLook } from "@/lib/poseLook";
 import { poseStore, usePoseStore } from "@/lib/poseStore";
 import { useMediaQuery } from "@/lib/useColorScheme";
 import { usePoseHistory } from "@/lib/usePoseHistory";
 import { settingsStore, stageColor, useScheme, useSettings, type OutlineWeight } from "@/lib/settings";
 import { installDevHooks } from "@/lib/devHooks";
 import { lightingUi, useLightingUi } from "@/lib/lighting";
+import { fisheyeViews, perspective, usePerspectiveUi } from "@/lib/perspective";
+import { cameraBridge, MAX_VIEWS, type SavedView } from "@/lib/cameraViews";
+import { session, timerSettings, useSession, type SessionPose } from "@/lib/drawingTimer";
+import { isRestPose } from "@/lib/poseMath";
 import { VIEW_ORDER, type ViewPreset, type ViewRequest } from "@/lib/views";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { TooltipLayer } from "@/components/ui/TooltipLayer";
@@ -21,18 +26,27 @@ import { FocusToggle } from "./FocusToggle";
 import { HistoryControls } from "./HistoryControls";
 import { HoverLabel } from "./HoverLabel";
 import { JointInspector } from "./JointInspector";
+import { CameraViewsMenu, type ViewsAnchor } from "./CameraViewsMenu";
 import { LightingPanel } from "./LightingPanel";
+import { PerspectivePanel } from "./PerspectivePanel";
 import { LoadingVeil } from "./LoadingVeil";
 import { CollapsedSidebarButtons, Sidebar, SIDEBAR_SPACE } from "./Sidebar";
 import { StatusPill } from "./StatusPill";
+import { SessionSummary } from "./SessionSummary";
+import { capsulePhase, ReadyOverlay, TimerCapsule } from "./TimerCapsule";
+import { TimerPanel, type TimerAnchor } from "./TimerPanel";
 import { UndoToast } from "./UndoToast";
-import { usePoseEditing } from "./usePoseEditing";
+import { REST_POSE, usePoseEditing } from "./usePoseEditing";
 import { usePoseGeneration } from "./usePoseGeneration";
+import { usePoseLook } from "./usePoseLook";
 import { SettingsPanel, type SettingsAnchor } from "./SettingsPanel";
 import { ViewSwitcher } from "./ViewSwitcher";
 
 // WebGL is browser-only; skip prerendering the canvas.
 const Scene = dynamic(() => import("@/components/scene/Scene"), { ssr: false });
+
+/** The panels and popovers that take turns (one open at a time). */
+type Menu = "lighting" | "timer" | "fisheye" | "views" | "settings";
 
 export function Studio() {
   const history = usePoseHistory();
@@ -62,36 +76,133 @@ export function Studio() {
   const jointSelected = usePoseStore((s) => s.selected !== null);
   const [settingsAnchor, setSettingsAnchor] = useState<SettingsAnchor | null>(null);
   const closeSettings = useCallback(() => setSettingsAnchor(null), []);
+  const [timerAnchor, setTimerAnchor] = useState<TimerAnchor | null>(null);
+  const closeTimer = useCallback(() => setTimerAnchor(null), []);
+  const [viewsAnchor, setViewsAnchor] = useState<ViewsAnchor | null>(null);
+  const closeViews = useCallback(() => setViewsAnchor(null), []);
+  const sessionPhase = useSession((s) => s.phase);
+  // The capsule takes the top bar's centre spot whenever it has something to show.
+  const timing = capsulePhase(sessionPhase);
+  // A pose session owns the screen: the interface stays hidden until it ends.
+  const [sessionLocked, setSessionLocked] = useState(false);
 
   // "Just the pose": every piece of interface fades away and the figure
   // can be orbited but not posed. The corner button (or Esc / H) brings it back.
   const [focus, setFocus] = useState(false);
   const focusRef = useRef(false);
-  const setFocusMode = useCallback((on: boolean) => {
-    focusRef.current = on;
-    setFocus(on);
-    poseStore.setViewOnly(on);
-    if (on) {
-      setSettingsAnchor(null);
-      lightingUi.set({ open: false, dragging: null });
-      (document.activeElement as HTMLElement | null)?.blur();
-    }
+  // Posing pauses while the interface is hidden, while lighting is being
+  // set up, and while a pose session has the stage. One place decides.
+  const sessionHoldsStage = useRef(false);
+  // Lighting and the fish-eye lens belong to the open pose.
+  usePoseLook(history, activeId, sessionHoldsStage);
+  const refreshViewOnly = useCallback(() => {
+    const fisheye = perspective.ui().on;
+    poseStore.setViewOnly(focusRef.current || lightingUi.get().open || sessionHoldsStage.current || fisheye);
   }, []);
+  /**
+   * One menu at a time. Every button that opens a panel or popover calls
+   * this first, so opening one closes whichever was open: lighting, the
+   * timer, the fish-eye menu (the lens itself stays as it is),
+   * camera angles, settings, and anything added later.
+   */
+  const closeMenusExcept = useCallback(
+    (keep: Menu | null) => {
+      if (keep !== "lighting" && lightingUi.get().open) lightingUi.set({ open: false, dragging: null });
+      if (keep !== "timer") setTimerAnchor(null);
+      if (keep !== "views") setViewsAnchor(null);
+      if (keep !== "settings") setSettingsAnchor(null);
+      if (keep !== "fisheye" && perspective.ui().open) perspective.setUi({ open: false });
+      refreshViewOnly();
+    },
+    [refreshViewOnly],
+  );
+
+  const setFocusMode = useCallback(
+    (on: boolean) => {
+      // During a pose session the history, prompt and "New pose" would let
+      // you swap or save the session's poses by accident, so they stay away.
+      if (!on && sessionHoldsStage.current) return;
+      focusRef.current = on;
+      setFocus(on);
+      if (on) {
+        closeMenusExcept(null);
+        (document.activeElement as HTMLElement | null)?.blur();
+      }
+      refreshViewOnly();
+    },
+    [refreshViewOnly, closeMenusExcept],
+  );
 
   // Lighting mode: the lights appear in the scene and can be dragged; the
   // body can't be posed meanwhile, so a missed grab never bends an arm.
   const lightingOpen = useLightingUi((s) => s.open);
-  const setLighting = useCallback((open: boolean) => {
-    lightingUi.set({ open, dragging: null });
-    if (open) poseStore.select(null);
-    poseStore.setViewOnly(open || focusRef.current);
-  }, []);
+  const setLighting = useCallback(
+    (open: boolean) => {
+      if (open) {
+        closeMenusExcept("lighting");
+        poseStore.select(null);
+      }
+      lightingUi.set({ open, dragging: null });
+      refreshViewOnly();
+    },
+    [refreshViewOnly, closeMenusExcept],
+  );
   const closeLighting = useCallback(() => setLighting(false), [setLighting]);
-  const toggleSettings = useCallback((trigger: HTMLElement) => {
-    setSettingsAnchor((cur) =>
-      cur ? null : { rect: trigger.getBoundingClientRect(), returnFocus: trigger },
-    );
+
+  // The drawing timer's setup popover, from its top-bar button (or T).
+  const timerButton = useRef<HTMLButtonElement>(null);
+  const toggleTimer = useCallback(() => {
+    const trigger = timerButton.current;
+    if (!trigger) return;
+    if (timerAnchor) return setTimerAnchor(null);
+    closeMenusExcept("timer");
+    setTimerAnchor({ rect: trigger.getBoundingClientRect(), returnFocus: trigger });
+  }, [timerAnchor, closeMenusExcept]);
+
+  // Exact views kept with the open pose, to come back to after orbiting away.
+  const viewsButton = useRef<HTMLButtonElement>(null);
+  const toggleViews = useCallback(() => {
+    const trigger = viewsButton.current;
+    if (!trigger) return;
+    if (viewsAnchor) return setViewsAnchor(null);
+    closeMenusExcept("views");
+    setViewsAnchor({ rect: trigger.getBoundingClientRect(), returnFocus: trigger });
+  }, [viewsAnchor, closeMenusExcept]);
+
+  // Fish-eye lens: curvilinear perspective, with optional guide lines. Its
+  // button (or P) opens its menu like any other; the lens is switched on and
+  // off inside the menu, and stays as it is when the menu closes.
+  const perspectiveOn = usePerspectiveUi((s) => s.on);
+  const fisheyeMenuOpen = usePerspectiveUi((s) => s.open);
+  const setPerspective = useCallback((on: boolean) => {
+    if (on) poseStore.select(null);
+    perspective.toggle(on);
   }, []);
+  const toggleFisheyeMenu = useCallback(() => {
+    if (perspective.ui().open) return perspective.setUi({ open: false });
+    closeMenusExcept("fisheye");
+    poseStore.select(null);
+    perspective.setUi({ open: true });
+  }, [closeMenusExcept]);
+  const closeFisheyeMenu = useCallback(() => perspective.setUi({ open: false }), []);
+  // The fish-eye image is bent, so a click wouldn't land on the part under
+  // it: posing pauses while it's on.
+  const fisheyeOn = perspectiveOn;
+  useEffect(() => {
+    if (fisheyeOn) poseStore.select(null);
+    refreshViewOnly();
+  }, [fisheyeOn, refreshViewOnly]);
+  useEffect(() => {
+    if (jointSelected && perspective.ui().open) perspective.setUi({ open: false });
+  }, [jointSelected]);
+  const toggleSettings = useCallback(
+    (trigger: HTMLElement) => {
+      if (settingsAnchor) return setSettingsAnchor(null);
+      closeMenusExcept("settings");
+      setSettingsAnchor({ rect: trigger.getBoundingClientRect(), returnFocus: trigger });
+    },
+    [settingsAnchor, closeMenusExcept],
+  );
 
   // Apply the theme and stage colour app-wide (the boot script did the
   // first paint; this keeps them in sync with Settings and the OS).
@@ -118,7 +229,7 @@ export function Studio() {
         history.update(active.id, { prompts: next.prompts, status: "posing" });
         void generation.run(next, prompt);
       } else {
-        const entry = createPoseEntry(prompt);
+        const entry = withCurrentLook(createPoseEntry(prompt));
         history.add(entry);
         setActiveId(entry.id);
         void generation.run(entry, prompt);
@@ -154,10 +265,13 @@ export function Studio() {
   }, [deleted, history]);
 
   const newPose = useCallback(() => {
+    // Already on the default pose: start it over with the default look
+    // (leaving a saved pose does this once that pose has kept its own).
+    if (!activeId) showLook(null);
     setActiveId(null);
     if (isCompact) setSidebarOpen(false);
     composer.current?.focus();
-  }, [isCompact]);
+  }, [isCompact, activeId]);
 
   const selectEntry = useCallback(
     (id: string) => {
@@ -186,7 +300,7 @@ export function Studio() {
   useEffect(() => installDevHooks(), []);
 
   // Keyboard, ignored while typing:
-  //   /  prompt   1–4  camera angles   O  outline   Esc  deselect
+  //   /  prompt   1–4  camera presets   C  saved camera angles   O  outline   P  fish-eye lens   L  lighting   T  timer   Esc  deselect
   //   Ctrl/⌘ Z  undo   Ctrl/⌘ ⇧ Z or Ctrl Y  redo
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -206,6 +320,22 @@ export function Studio() {
         return;
       }
       if (mod || e.altKey) return;
+      // While a timer runs: Space pauses / resumes, → skips to the next pose.
+      const phase = session.get().phase;
+      if (phase !== "idle" && phase !== "summary" && target.tagName !== "INPUT") {
+        if (e.key === " " && !target.closest("button")) {
+          e.preventDefault();
+          if (phase === "drawing") session.pause();
+          else if (phase === "paused") session.resume();
+          else if (phase === "timeUp") session.again();
+          return;
+        }
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          session.next();
+          return;
+        }
+      }
       const preset = VIEW_ORDER[Number(e.key) - 1];
       if (e.key === "/") {
         e.preventDefault();
@@ -214,6 +344,13 @@ export function Studio() {
         if (focusRef.current) setFocusMode(false);
         else if (lightingUi.get().open) setLighting(false);
         else poseStore.select(null);
+      } else if (key === "p" && target.tagName !== "INPUT") {
+        if (!focusRef.current) toggleFisheyeMenu();
+      } else if (key === "c" && target.tagName !== "INPUT") {
+        if (!focusRef.current) toggleViews();
+      } else if (key === "t" && target.tagName !== "INPUT") {
+        // Not while a session has the screen (the interface is hidden then).
+        if (!focusRef.current) toggleTimer();
       } else if (key === "l" && target.tagName !== "INPUT") {
         if (!focusRef.current) setLighting(!lightingUi.get().open);
       } else if (key === "h" && target.tagName !== "INPUT") {
@@ -226,9 +363,168 @@ export function Studio() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [requestView, toggleOutline, editing, setFocusMode, setLighting]);
+  }, [requestView, toggleOutline, editing, setFocusMode, setLighting, toggleTimer, toggleFisheyeMenu, toggleViews]);
 
   const contentInset = sidebarOpen && !isCompact && !focus ? SIDEBAR_SPACE : 0;
+
+  /* ------------------------------------------------- saved camera angles */
+
+  const savedViews = active?.views ?? [];
+
+  /** A small JPEG of the visible stage (right of the sidebar), 16:10. */
+  const captureView = useCallback((): string | undefined => {
+    const canvas = document.querySelector<HTMLCanvasElement>("main canvas");
+    if (!canvas || !canvas.clientWidth) return undefined;
+    try {
+      const { width: W, height: H } = canvas;
+      const left = contentInset * (W / canvas.clientWidth);
+      const visibleW = W - left;
+      const cropW = Math.min(visibleW, H * 1.6);
+      const cropH = cropW / 1.6;
+      const out = document.createElement("canvas");
+      out.width = 192;
+      out.height = 120;
+      out.getContext("2d")?.drawImage(canvas, left + (visibleW - cropW) / 2, (H - cropH) / 2, cropW, cropH, 0, 0, 192, 120);
+      return out.toDataURL("image/jpeg", 0.72);
+    } catch {
+      return undefined;
+    }
+  }, [contentInset]);
+
+  const saveView = useCallback(() => {
+    const camera = cameraBridge.get();
+    if (!camera) return;
+    const view: SavedView = {
+      id: crypto.randomUUID(),
+      ...camera,
+      fisheye: perspective.ui().on,
+      thumb: captureView(),
+      createdAt: Date.now(),
+    };
+    if (active) {
+      history.update(active.id, { views: [...(active.views ?? []), view].slice(-MAX_VIEWS) });
+    } else {
+      // The default pose isn't saved yet: keep it (like editing it does), with this angle.
+      const entry = { ...withCurrentLook(createUntitledEntry(poseStore.get().pose)), views: [view] };
+      history.add(entry);
+      setActiveId(entry.id);
+    }
+  }, [active, history, captureView]);
+
+  /** Glide back to a saved angle (switching the fish-eye lens on or off to match). */
+  const goToView = useCallback((view: SavedView) => {
+    if (view.fisheye !== perspective.ui().on) {
+      fisheyeViews.setPending(view);
+      perspective.toggle(view.fisheye);
+      poseStore.select(null);
+    } else {
+      cameraBridge.go(view);
+    }
+  }, []);
+
+  const deleteView = useCallback(
+    (id: string) => {
+      if (active) history.update(active.id, { views: (active.views ?? []).filter((v) => v.id !== id) });
+    },
+    [active, history],
+  );
+
+  /* ----------------------------------------------------- drawing timer */
+
+  const latest = useRef({ history, activeId, view, contentInset });
+  useEffect(() => {
+    latest.current = { history, activeId, view, contentInset };
+  });
+  const savedPoseCount = history.entries.filter((e) => !isRestPose(e.pose)).length;
+
+
+  /** A small JPEG of the figure (for the session summary). */
+  const captureStage = useCallback(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>("main canvas");
+    if (!canvas || !canvas.clientWidth) return undefined;
+    try {
+      const { width: W, height: H } = canvas;
+      const cropH = H * 0.92;
+      const cropW = Math.min(W, cropH * 0.7);
+      // The figure sits in the middle of the visible stage (right of the sidebar).
+      const cx = (W + latest.current.contentInset * (W / canvas.clientWidth)) / 2;
+      const out = document.createElement("canvas");
+      out.width = 210;
+      out.height = 300;
+      out.getContext("2d")?.drawImage(canvas, Math.max(0, Math.min(W - cropW, cx - cropW / 2)), (H - cropH) * 0.4, cropW, cropH, 0, 0, 210, 300);
+      return out.toDataURL("image/jpeg", 0.82);
+    } catch {
+      return undefined;
+    }
+  }, []);
+
+  const startTimer = useCallback(() => {
+    const s = timerSettings.get();
+    setTimerAnchor(null);
+    lightingUi.set({ open: false, dragging: null });
+    poseStore.select(null);
+    // A session shows its own poses: step off the open pose (and come back after).
+    const returnTo = latest.current.activeId;
+    const viewBefore = latest.current.view;
+    // A pose session takes the whole screen (and the interface comes back
+    // when it ends); the plain timer leaves everything as it is.
+    const isSession = s.mode === "session";
+    const hid = isSession && !focusRef.current;
+    if (isSession) {
+      if (hid) setFocusMode(true);
+      sessionHoldsStage.current = true;
+      setSessionLocked(true);
+      setActiveId(null);
+    }
+    refreshViewOnly();
+
+    session.start({
+      savedPoses: () =>
+        latest.current.history.entries.filter((e) => !isRestPose(e.pose)).map((e) => ({ title: e.title, pose: e.pose })),
+      show: (pose) => poseStore.load(pose),
+      randomView: () => {
+        const others = VIEW_ORDER.filter((v) => v !== latest.current.view);
+        requestView(others[Math.floor(Math.random() * others.length)]);
+      },
+      capture: captureStage,
+      end: () => {
+        if (sessionHoldsStage.current) {
+          sessionHoldsStage.current = false;
+          setSessionLocked(false);
+          if (hid && focusRef.current) setFocusMode(false);
+          // Back to a clear stage: the sidebar stays tucked away after a session.
+          setSidebarOpen(false);
+          setActiveId(returnTo);
+          const entry = latest.current.history.entries.find((e) => e.id === returnTo);
+          poseStore.load(entry?.pose ?? REST_POSE);
+          // Random angles moved the camera; go back to where you were.
+          if (s.randomView && viewBefore && latest.current.view !== viewBefore) requestView(viewBefore);
+        }
+        refreshViewOnly();
+      },
+    });
+  }, [setFocusMode, refreshViewOnly, requestView, captureStage]);
+
+  /** Starred session poses → history (skipping ones that came from history). */
+  const saveSessionPoses = useCallback(
+    (poses: SessionPose[]) => {
+      const existing = new Set(latest.current.history.entries.map((e) => e.pose));
+      const now = Date.now();
+      poses
+        .filter((p) => !existing.has(p.pose))
+        .forEach((p, i) =>
+          history.add({
+            id: crypto.randomUUID(),
+            title: p.title,
+            prompts: p.prompt && p.prompt !== p.title ? [p.prompt] : [],
+            pose: p.pose,
+            createdAt: now + i,
+            status: "ready",
+          }),
+        );
+    },
+    [history],
+  );
 
   return (
     <MotionConfig reducedMotion="user" transition={spring}>
@@ -304,14 +600,19 @@ export function Studio() {
         >
           <div className="flex items-start justify-end gap-3 p-3 sm:grid sm:grid-cols-[1fr_auto_1fr]">
             <div className="hidden sm:block" />
-            <div className="hidden flex-col items-center gap-2 sm:flex">
-              <StatusPill
-                entry={active}
-                onTogglePin={history.togglePin}
-                result={generation.lastResult}
-              />
-              {/* Posing is paused in lighting mode, so its hint would mislead. */}
-              <ControlsHint visible={!hasInteracted && !lightingOpen} />
+            <div className={`flex-col items-center gap-2 ${timing ? "flex" : "hidden sm:flex"}`}>
+              {/* A running timer docks here, in place of the pose name, so it
+                  never covers the controls around it. */}
+              {timing ? (
+                <TimerCapsule variant="docked" show={!focus} />
+              ) : (
+                <>
+                  <StatusPill entry={active} onTogglePin={history.togglePin} result={generation.lastResult} />
+                  {/* Posing is paused in lighting mode, so its hint would mislead. */}
+                  {/* Posing pauses with lighting or the fish-eye lens on: no posing hint then. */}
+                  <ControlsHint visible={!hasInteracted && !lightingOpen && !perspectiveOn} />
+                </>
+              )}
             </div>
             <div className="flex items-center gap-2 justify-self-end">
               <HistoryControls
@@ -320,7 +621,39 @@ export function Studio() {
                 onUndo={editing.undo}
                 onRedo={editing.redo}
               />
+              <button
+                ref={viewsButton}
+                type="button"
+                onClick={toggleViews}
+                aria-pressed={!!viewsAnchor}
+                aria-label="Camera angles"
+                data-tip="Camera angles"
+                data-tip-kbd="C"
+                className={`pressable pointer-events-auto flex size-9 items-center justify-center rounded-full ${
+                  viewsAnchor ? "bg-accent text-on-accent shadow-[var(--shadow-float)]" : "material text-label-2 hover:text-label"
+                }`}
+              >
+                <Camera size={17} aria-hidden />
+              </button>
               <ViewSwitcher value={view} onChange={requestView} />
+              <button
+                type="button"
+                onClick={toggleFisheyeMenu}
+                aria-pressed={fisheyeMenuOpen}
+                aria-label={perspectiveOn ? "Fish-eye lens (on)" : "Fish-eye lens"}
+                data-tip={perspectiveOn ? "Fish-eye lens: on" : "Fish-eye lens"}
+                data-tip-kbd="P"
+                className={`pressable pointer-events-auto flex size-9 items-center justify-center rounded-full ${
+                  fisheyeMenuOpen
+                    ? "bg-accent text-on-accent shadow-[var(--shadow-float)]"
+                    : // Menu closed but the lens is on: the icon stays tinted.
+                      perspectiveOn
+                      ? "material text-accent"
+                      : "material text-label-2 hover:text-label"
+                }`}
+              >
+                <Axis3d size={17} aria-hidden />
+              </button>
               <button
                 type="button"
                 onClick={() => setLighting(!lightingOpen)}
@@ -334,19 +667,44 @@ export function Studio() {
               >
                 <Sun size={17} aria-hidden />
               </button>
+              <button
+                type="button"
+                ref={timerButton}
+                onClick={toggleTimer}
+                aria-pressed={!!timerAnchor || timing}
+                aria-label="Drawing timer"
+                data-tip="Drawing timer"
+                data-tip-kbd="T"
+                className={`pressable pointer-events-auto flex size-9 items-center justify-center rounded-full ${
+                  timerAnchor || timing ? "bg-accent text-on-accent shadow-[var(--shadow-float)]" : "material text-label-2 hover:text-label"
+                }`}
+              >
+                <Timer size={17} aria-hidden />
+              </button>
             </div>
           </div>
 
-          <div className="relative flex min-h-0 flex-1 items-start justify-end px-3">
-            {/* Opening lighting deselects the joint, so only one of these shows. */}
-            <JointInspector className="w-[272px] max-md:absolute max-md:inset-x-3 max-md:bottom-2 max-md:w-auto" />
+          <div className="relative min-h-0 flex-1 px-3">
+            {/* One panel at a time, each in its own layer at the top right:
+                one sliding out never squeezes the one sliding in. */}
+            <div className="absolute top-0 right-3 max-md:inset-x-3 max-md:top-auto max-md:bottom-2">
+              <JointInspector className="w-[272px] max-md:w-auto" />
+            </div>
             <AnimatePresence initial={false}>
               {lightingOpen && (
-                <LightingPanel
-                  key="lighting"
-                  onClose={closeLighting}
-                  className="w-[300px] max-md:absolute max-md:inset-x-3 max-md:bottom-2 max-md:w-auto"
-                />
+                <div key="lighting" className="absolute top-0 right-3 max-md:inset-x-3 max-md:top-auto max-md:bottom-2">
+                  <LightingPanel onClose={closeLighting} className="w-[300px] max-md:w-auto" />
+                </div>
+              )}
+              {fisheyeMenuOpen && (
+                <div key="fisheye" className="absolute top-0 right-3 max-md:inset-x-3 max-md:top-auto max-md:bottom-2">
+                  <PerspectivePanel
+                    on={perspectiveOn}
+                    onToggle={setPerspective}
+                    onClose={closeFisheyeMenu}
+                    className="w-[300px] max-md:w-auto"
+                  />
+                </div>
               )}
             </AnimatePresence>
           </div>
@@ -367,8 +725,33 @@ export function Studio() {
         <HoverLabel />
         </motion.div>
 
-        <FocusToggle focus={focus} onChange={setFocusMode} />
+        {/* During a pose session the interface stays hidden until it ends. */}
+        {!sessionLocked && <FocusToggle focus={focus} onChange={setFocusMode} />}
+
+        {/* With the interface hidden, the timer floats at the top of the stage. */}
+        <TimerCapsule variant="floating" show={focus} inset={contentInset} />
+        <ReadyOverlay />
       </main>
+      <AnimatePresence>
+        {timerAnchor && (
+          <TimerPanel key="timer" anchor={timerAnchor} savedCount={savedPoseCount} onStart={startTimer} onClose={closeTimer} />
+        )}
+      </AnimatePresence>
+      <SessionSummary onSave={saveSessionPoses} />
+      <AnimatePresence>
+        {viewsAnchor && (
+          <CameraViewsMenu
+            key="views"
+            anchor={viewsAnchor}
+            poseTitle={active?.title ?? null}
+            views={savedViews}
+            onSave={saveView}
+            onGo={goToView}
+            onDelete={deleteView}
+            onClose={closeViews}
+          />
+        )}
+      </AnimatePresence>
       <TooltipLayer />
       <ConfirmDialog
         open={!!pendingDelete}

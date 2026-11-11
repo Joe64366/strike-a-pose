@@ -206,6 +206,37 @@ button:focus-visible > .swatch {
   backdrop-filter: blur(8px);
 }
 
+/*
+ * Drawing timer capsule: dark glass in both themes (like the Dynamic
+ * Island), so it reads the same over any stage colour. The ring and digits
+ * turn orange for the last few seconds.
+ */
+.timer-capsule {
+  background: rgb(18 18 20 / 0.82);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  box-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.1) inset, 0 10px 30px -8px rgb(0 0 0 / 0.45);
+}
+.timer-ring {
+  stroke: #fff;
+  transition: stroke 0.3s;
+}
+.timer-digits {
+  transition: color 0.3s;
+}
+.timer-capsule[data-warn] .timer-ring {
+  stroke: #ff9f0a;
+}
+.timer-capsule[data-warn] .timer-digits {
+  color: #ff9f0a;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .timer-capsule {
+    background: rgb(18 18 20);
+    backdrop-filter: none;
+  }
+}
+
 /* Lighting panel's direction ball: focus ring for keyboard nudging. */
 .light-ball:focus-visible {
   box-shadow: 0 0 0 2px var(--accent);

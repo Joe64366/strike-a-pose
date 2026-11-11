@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { sanitizeLighting } from "./lighting";
+import { sanitizeFisheye } from "./perspective";
 import { MAX_TITLE_LENGTH, type PoseEntry, type PoseStatus } from "./poses";
 
 const STORAGE_KEY = "strike-a-pose:history:v1";
@@ -23,6 +25,8 @@ function load(): PoseEntry[] {
           : (e.pose ?? {}),
       // A reload mid-generation can't resume the request.
       status: e.status === "posing" ? "error" : e.status,
+      lighting: e.lighting ? sanitizeLighting(e.lighting) : undefined,
+      fisheye: e.fisheye ? sanitizeFisheye(e.fisheye) : undefined,
     }));
   } catch {
     return [];

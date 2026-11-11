@@ -244,10 +244,11 @@ export function describeDirection(azimuth: number, elevation: number): string {
 
 /* ----------------------------------------------------------------- store */
 
-const KEY = "strike-a-pose:lighting:v1";
+/**
+ * The lighting on stage: the open pose's. Each saved pose keeps its own
+ * (PoseEntry.lighting); the default pose always starts from DEFAULT_LIGHTING.
+ */
 let state: Lighting = DEFAULT_LIGHTING;
-let loaded = false;
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
 
 const num = (v: unknown, lo: number, hi: number, fallback: number) =>
@@ -266,43 +267,34 @@ function sanitizeLight(raw: unknown, fallback: LightSpec): LightSpec {
   };
 }
 
-function load() {
-  if (loaded || typeof window === "undefined") return;
-  loaded = true;
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return;
-    const saved = JSON.parse(raw) as Partial<Lighting>;
-    const lights = (saved.lights ?? {}) as Partial<Record<LightId, unknown>>;
-    state = {
-      lights: {
-        key: sanitizeLight(lights.key, DEFAULT_LIGHTING.lights.key),
-        fill: sanitizeLight(lights.fill, DEFAULT_LIGHTING.lights.fill),
-        rim: sanitizeLight(lights.rim, DEFAULT_LIGHTING.lights.rim),
-      },
-      ambient: num(saved.ambient, 0, 1, DEFAULT_LIGHTING.ambient),
-      shading: saved.shading === "two" || saved.shading === "three" ? saved.shading : "smooth",
-      preset: saved.preset && saved.preset in PRESETS ? saved.preset : null,
-    };
-  } catch {}
+/** Lighting read back from storage, with anything missing or out of range fixed. */
+export function sanitizeLighting(raw: unknown): Lighting {
+  const saved = (raw && typeof raw === "object" ? raw : {}) as Partial<Lighting>;
+  const lights = (saved.lights ?? {}) as Partial<Record<LightId, unknown>>;
+  return {
+    lights: {
+      key: sanitizeLight(lights.key, DEFAULT_LIGHTING.lights.key),
+      fill: sanitizeLight(lights.fill, DEFAULT_LIGHTING.lights.fill),
+      rim: sanitizeLight(lights.rim, DEFAULT_LIGHTING.lights.rim),
+    },
+    ambient: num(saved.ambient, 0, 1, DEFAULT_LIGHTING.ambient),
+    shading: saved.shading === "two" || saved.shading === "three" ? saved.shading : "smooth",
+    preset: saved.preset && saved.preset in PRESETS ? saved.preset : null,
+  };
 }
 
 function commit(next: Lighting) {
   state = next;
   listeners.forEach((l) => l());
-  // Drags update every frame; write to storage once they pause.
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(state));
-    } catch {}
-  }, 250);
 }
 
 export const lightingStore = {
   get(): Lighting {
-    load();
     return state;
+  },
+  /** Show a pose's lighting (switching poses). */
+  load(next: Lighting) {
+    commit(next);
   },
   subscribe(l: () => void) {
     listeners.add(l);

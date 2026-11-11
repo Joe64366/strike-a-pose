@@ -7,13 +7,18 @@ import {
   Lightformer,
 } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { DoubleSide, type PerspectiveCamera } from "three";
+import { DoubleSide, Vector3, type PerspectiveCamera } from "three";
 import { Suspense, useCallback, useEffect, useRef } from "react";
+import { cameraBridge } from "@/lib/cameraViews";
 import { lightingUi, useLighting } from "@/lib/lighting";
+import { perspective } from "@/lib/perspective";
 import { poseStore } from "@/lib/poseStore";
 import { bodyHex, OUTLINE_PX, outlineHex, stagePalette, useScheme, useSettings } from "@/lib/settings";
 import { ORBIT_TARGET, VIEW_PRESETS, type ViewPreset, type ViewRequest } from "@/lib/views";
+// Before any shader compiles: smoother soft-shadow filtering.
+import "./softShadows";
 import { Mannequin } from "./Mannequin";
+import { PerspectiveRig } from "./PerspectiveRig";
 import { StageLights } from "./StageLights";
 
 /** Environment (reflections + soft bounce) strength at ambient 1. */
@@ -93,6 +98,7 @@ export default function Scene({ viewRequest, onUserInteract, onReady, leftInset 
       </Suspense>
 
       <Rig viewRequest={viewRequest} onUserInteract={onUserInteract} />
+      <PerspectiveRig />
       <StageOffset inset={leftInset} />
     </Canvas>
   );
@@ -161,6 +167,18 @@ function Rig({ viewRequest, onUserInteract }: Pick<SceneProps, "viewRequest" | "
   useEffect(() => {
     const cc = controls.current;
     if (!viewRequest || !cc) return;
+    // With the fish-eye lens on, the camera keeps its close-in distance; a
+    // preset just turns it round the figure.
+    if (perspective.ui().on) {
+      const [x, y, z] = VIEW_PRESETS[viewRequest.preset].position;
+      const [, ty] = ORBIT_TARGET;
+      const azimuth = Math.atan2(x, z);
+      const polar = Math.acos((y - ty) / Math.hypot(x, y - ty, z));
+      // The equivalent angle nearest the current one: the short way round.
+      const goal = azimuth + 2 * Math.PI * Math.round((cc.azimuthAngle - azimuth) / (2 * Math.PI));
+      void cc.rotateTo(goal, polar, true);
+      return;
+    }
     const look = presetLookAt(viewRequest.preset);
     // Orbiting accumulates whole turns (720°, 1080°…); animating straight to
     // the preset would unwind every one of them. Swap in the equivalent angle
@@ -186,12 +204,33 @@ function Rig({ viewRequest, onUserInteract }: Pick<SceneProps, "viewRequest" | "
     lightingUi.set({ view: [q.x, q.y, q.z, q.w] });
   });
 
+  // Lets the interface read the exact camera (to save an angle) and send it
+  // back there later, gliding rather than jumping.
+  useEffect(() => {
+    const cc = controls.current;
+    if (!cc) return;
+    cameraBridge.register({
+      get: () => ({
+        position: cc.getPosition(new Vector3()).toArray() as [number, number, number],
+        target: cc.getTarget(new Vector3()).toArray() as [number, number, number],
+      }),
+      go: ({ position: [x, y, z], target: [tx, ty, tz] }) => {
+        // Take the short way round, however many turns the orbit has wound up.
+        const goal = Math.atan2(x - tx, z - tz);
+        cc.azimuthAngle = goal + Math.atan2(Math.sin(cc.azimuthAngle - goal), Math.cos(cc.azimuthAngle - goal));
+        void cc.setLookAt(x, y, z, tx, ty, tz, true);
+      },
+    });
+    return () => cameraBridge.register(null);
+  }, []);
+
   useEffect(() => {
     // Development-only handle for automated checks (e.g. camera angle).
     if (process.env.NODE_ENV === "development" && controls.current) {
       (window as unknown as { __camera: unknown }).__camera = controls.current;
+      (window as unknown as { __scene: unknown }).__scene = getSize().scene;
     }
-  }, []);
+  }, [getSize]);
 
   useEffect(() => {
     const cc = controls.current;

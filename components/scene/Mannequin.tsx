@@ -6,6 +6,7 @@ import type CameraControlsImpl from "camera-controls";
 import { useEffect, useMemo, useRef } from "react";
 import {
   Box3,
+  FrontSide,
   Group,
   Mesh,
   MeshStandardMaterial,
@@ -101,6 +102,13 @@ export function Mannequin({
     // mounts stay independent).
     const model = cloneSkinned(scene);
     const material = new MeshStandardMaterial({ color: "#e7e5e2", roughness: 0.58, metalness: 0 });
+    // Shadows record the side of each body part that faces the light (three's
+    // default is the far side). With the far side, whatever blocks light in
+    // a groove or between the thighs sits millimetres from what it shades,
+    // and skimming light flickers through as jagged stripes. With the near
+    // side the blocker is a whole limb away. Lit skin is kept from shadowing
+    // itself by the grazing-scaled normal offset in softShadows.ts.
+    material.shadowSide = FrontSide;
     const outlineMaterial = new OutlineMaterial();
     const skinned: SkinnedMesh[] = [];
 
@@ -142,9 +150,12 @@ export function Mannequin({
       hull.raycast = () => {};
       // Keep the line width in true pixels across resizes and DPR changes.
       hull.onBeforeRender = (renderer) => {
-        renderer.getDrawingBufferSize(bufferSize);
+        // Rendering into a target (the fish-eye lens's cube capture)? Measure against it.
+        const target = renderer.getRenderTarget();
+        if (target) bufferSize.set(target.width, target.height);
+        else renderer.getDrawingBufferSize(bufferSize);
         outlineMaterial.uniforms.resolution.value.copy(bufferSize);
-        outlineMaterial.uniforms.width.value = line.px * renderer.getPixelRatio();
+        outlineMaterial.uniforms.width.value = line.px * (target ? 1.5 : renderer.getPixelRatio());
       };
       mesh.add(hull);
       hulls.push(hull);

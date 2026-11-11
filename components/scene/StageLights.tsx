@@ -3,7 +3,7 @@
 import { Billboard, Html, Line } from "@react-three/drei";
 import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import type CameraControlsImpl from "camera-controls";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Color, Quaternion, Raycaster, Vector2, Vector3, type DirectionalLight, type Group } from "three";
 import {
   anglesOf,
@@ -21,7 +21,9 @@ import {
   type LightId,
   type LightSpec,
 } from "@/lib/lighting";
+import { usePerspectiveUi } from "@/lib/perspective";
 import { poseStore } from "@/lib/poseStore";
+import { SHADOW_DEPTH, SHADOW_HALF_SIZE, shadowBiasFor, shadowMapSize } from "./softShadows";
 
 /** Chest height of the 1.8 m figure: what every light aims at. */
 const CENTER_Y = 0.95;
@@ -54,21 +56,35 @@ function setCursor(el: HTMLElement, cursor: string) {
 export function StageLights({ ground }: { ground: string }) {
   const lighting = useLighting();
   const open = useLightingUi((s) => s.open);
+  const fisheye = usePerspectiveUi((u) => u.on);
   return (
     <>
       <hemisphereLight color="#ffffff" groundColor={ground} intensity={lighting.ambient * HEMI_AT_FULL} />
       {LIGHT_IDS.map((id) => (
-        <SceneLight key={id} spec={lighting.lights[id]} mapSize={id === "key" ? 2048 : 1024} />
+        <SceneLight key={id} spec={lighting.lights[id]} maxMapSize={id === "key" ? 2048 : 1024} />
       ))}
-      {open && LIGHT_IDS.map((id) => <LightHandle key={id} id={id} spec={lighting.lights[id]} />)}
+      {/* Not through the fish-eye lens: a drag would land somewhere else on the bent image. */}
+      {open && !fisheye && LIGHT_IDS.map((id) => <LightHandle key={id} id={id} spec={lighting.lights[id]} />)}
     </>
   );
 }
 
-function SceneLight({ spec, mapSize }: { spec: LightSpec; mapSize: number }) {
+function SceneLight({ spec, maxMapSize }: { spec: LightSpec; maxMapSize: number }) {
   const ref = useRef<DirectionalLight>(null);
   const center = useMemo(() => new Vector3(), []);
   const [dx, dy, dz] = lightDirection(spec.azimuth, spec.elevation);
+  // Softness = shadow-map resolution (see softShadows.ts): coarser = softer.
+  const mapSize = shadowMapSize(spec.softness, maxMapSize);
+
+  // three keeps a shadow map at the size it was first made; drop it so the
+  // next frame rebuilds it at the new size.
+  useEffect(() => {
+    const shadow = ref.current?.shadow;
+    if (shadow?.map) {
+      shadow.map.dispose();
+      shadow.map = null;
+    }
+  }, [mapSize]);
 
   useFrame(() => {
     const l = ref.current;
@@ -88,11 +104,26 @@ function SceneLight({ spec, mapSize }: { spec: LightSpec; mapSize: number }) {
       intensity={spec.on ? spec.intensity * LIGHT_UNIT : 0}
       castShadow={spec.on && spec.shadows && spec.intensity > 0}
       shadow-mapSize={[mapSize, mapSize]}
-      shadow-bias={-0.0004}
-      shadow-normalBias={0.02}
-      shadow-radius={1 + spec.softness * 11}
+      // Shadows record the body's light-facing side (see Mannequin). Each
+      // point is tested slightly closer to the light; softShadows.ts reads
+      // `normalBias` as the base of that slope-scaled bias (about one texel,
+      // more where the light only skims), so skin never shadows itself while
+      // outlines stay exact.
+      shadow-bias={0}
+      shadow-normalBias={shadowBiasFor(mapSize)}
     >
-      <orthographicCamera attach="shadow-camera" args={[-3, 3, 3, -3, 0.5, 20]} />
+      {/* Depth range just covers the figure (light sits 8 m out): finer depth steps. */}
+      <orthographicCamera
+        attach="shadow-camera"
+        args={[
+          -SHADOW_HALF_SIZE,
+          SHADOW_HALF_SIZE,
+          SHADOW_HALF_SIZE,
+          -SHADOW_HALF_SIZE,
+          LIGHT_DISTANCE - SHADOW_DEPTH / 2,
+          LIGHT_DISTANCE + SHADOW_DEPTH / 2,
+        ]}
+      />
     </directionalLight>
   );
 }
