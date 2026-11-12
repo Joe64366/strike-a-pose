@@ -57,22 +57,27 @@ export function LightBall({
   view,
   body,
   selected,
+  mirrored = false,
 }: {
   size: number;
   lighting: Lighting;
   view: ViewQuat;
   body: string;
   selected: LightId;
+  /** Mirror view: the ball flips with the stage, and drags and arrows follow the screen. */
+  mirrored?: boolean;
 }) {
   const canvas = useBallCanvas(size, lighting, view, body);
   const pad = Math.round(size * 0.16);
   const r = size / 2 - 1;
+  /** Screen x ↔ the ball's own x. */
+  const sx = mirrored ? -1 : 1;
   const box = size + pad * 2;
 
   const dots = LIGHT_IDS.map((id) => {
     const spec = lighting.lights[id];
     const [x, y, z] = viewDirection(spec, view);
-    return { id, spec, x: box / 2 + x * r, y: box / 2 - y * r, front: z >= -0.02 };
+    return { id, spec, x: box / 2 + sx * x * r, y: box / 2 - y * r, front: z >= -0.02 };
   });
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -99,7 +104,7 @@ export function LightBall({
     let past = 0;
     const move = (ev: { clientX: number; clientY: number }) => {
       const q = at(ev);
-      const nx = (q.x - box / 2) / r;
+      const nx = (sx * (q.x - box / 2)) / r;
       const ny = -(q.y - box / 2) / r;
       const rr = Math.hypot(nx, ny);
       let v: [number, number, number];
@@ -139,7 +144,7 @@ export function LightBall({
     } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       e.preventDefault();
       // Move the light the way the arrow points *on screen*, whichever way the camera faces.
-      const want = e.key === "ArrowRight" ? 1 : -1;
+      const want = (e.key === "ArrowRight" ? 1 : -1) * sx;
       const x0 = viewDirection(spec, view)[0];
       const x1 = viewDirection({ ...spec, azimuth: spec.azimuth + step }, view)[0];
       const sign = (x1 - x0) * want >= 0 ? 1 : -1;
@@ -173,7 +178,7 @@ export function LightBall({
         ref={canvas}
         aria-hidden
         className="absolute rounded-full shadow-[0_6px_18px_rgb(0_0_0/0.18)]"
-        style={{ left: pad, top: pad, width: size, height: size }}
+        style={{ left: pad, top: pad, width: size, height: size, transform: mirrored ? "scaleX(-1)" : undefined }}
       />
       {dots
         .slice()

@@ -45,6 +45,28 @@ export const cameraBridge = {
   },
 };
 
+/* ------------------------------------------------------------ thumbnails */
+
+export type SnapshotView = Pick<SavedView, "id" | "position" | "target" | "fisheye">;
+type Snapshotter = (views: SnapshotView[]) => Promise<Record<string, string>>;
+
+let snapshotter: Snapshotter | null = null;
+
+/**
+ * Thumbnails of saved angles, rendered from the scene as it is now (the
+ * current pose, lighting and colours), so they never show a pose that has
+ * since changed. The scene registers the renderer (ViewSnapshots).
+ */
+export const viewSnapshots = {
+  register(next: Snapshotter | null) {
+    snapshotter = next;
+  },
+  /** JPEG data URLs by view id (empty if the scene isn't ready). */
+  take(views: SnapshotView[]): Promise<Record<string, string>> {
+    return snapshotter && views.length ? snapshotter(views) : Promise.resolve({});
+  },
+};
+
 /** The same view, near enough (a few mm, a fraction of a degree). */
 export function sameView(a: CameraView, b: CameraView, tolerance = 0.01): boolean {
   return a.position.every((n, i) => Math.abs(n - b.position[i]) < tolerance) && a.target.every((n, i) => Math.abs(n - b.target[i]) < tolerance);

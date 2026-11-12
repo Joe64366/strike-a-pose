@@ -74,16 +74,17 @@ async function callGroq(user: string): Promise<AiPose> {
 }
 
 /**
- * Flash follows the body-mechanics rules (knees that actually reach the
- * floor); Flash-Lite is faster but often squats when asked to kneel. So
- * Flash first, and Lite only if Flash is overloaded, rate-limited or slow.
+ * Flash reasons about bodies better than Flash-Lite, so Flash first (with a
+ * little thinking: reading the request right matters more than a second),
+ * and Lite only if Flash is overloaded, rate-limited or slow. Since postures
+ * and hand targets are named choices, even Lite gets the support right.
  */
 const GEMINI_MODELS = [
-  { model: "gemini-3.5-flash", timeout: 6_000 },
-  { model: "gemini-3.5-flash-lite", timeout: TIMEOUT_MS },
+  { model: "gemini-3.5-flash", timeout: 8_000, thinking: "low" },
+  { model: "gemini-3.5-flash-lite", timeout: TIMEOUT_MS, thinking: "minimal" },
 ];
 
-async function callGeminiModel(user: string, model: string, timeout: number): Promise<AiPose> {
+async function callGeminiModel(user: string, model: string, timeout: number, thinking: string): Promise<AiPose> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new ProviderError("gemini", 500, "GEMINI_API_KEY is not set");
   const data = await postJson(
@@ -96,7 +97,7 @@ async function callGeminiModel(user: string, model: string, timeout: number): Pr
       generationConfig: {
         responseMimeType: "application/json",
         responseJsonSchema: AI_POSE_SCHEMA,
-        thinkingConfig: { thinkingLevel: "minimal" },
+        thinkingConfig: { thinkingLevel: thinking },
       },
     },
     timeout,
@@ -107,9 +108,9 @@ async function callGeminiModel(user: string, model: string, timeout: number): Pr
 
 async function callGemini(user: string): Promise<AiPose> {
   let last: unknown;
-  for (const { model, timeout } of GEMINI_MODELS) {
+  for (const { model, timeout, thinking } of GEMINI_MODELS) {
     try {
-      return await callGeminiModel(user, model, timeout);
+      return await callGeminiModel(user, model, timeout, thinking);
     } catch (e) {
       last = e;
       console.warn(`[pose] ${model}: ${e instanceof Error ? e.message : String(e)}`);

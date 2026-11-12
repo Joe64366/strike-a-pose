@@ -1,19 +1,24 @@
 "use client";
 
-import { Check, X } from "lucide-react";
+import { X } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { ColorDot, CustomColorDot } from "@/components/ui/ColorSwatches";
 import { Segmented, Switch } from "@/components/ui/Segmented";
 import {
   BACKGROUNDS,
   BODY_COLORS,
+  bodyHex,
+  isHex,
   OUTLINE_COLORS,
+  outlineHex,
   settingsStore,
-  stagePalette,
+  stageColor,
   useScheme,
   useSettings,
   type Appearance,
+  type HexColor,
   type OutlineWeight,
 } from "@/lib/settings";
 
@@ -80,7 +85,7 @@ export function SettingsPanel({ anchor, onClose }: { anchor: SettingsAnchor; onC
       initial={{ opacity: 0, scale: 0.94 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.14 } }}
-      className="menu-surface fixed z-[80] max-h-[calc(100dvh-24px)] w-[320px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-[18px] p-4 text-label"
+      className="menu-surface fixed z-[80] max-h-[calc(100dvh-24px)] w-[320px] max-w-[calc(100vw-24px)] overflow-x-hidden overflow-y-auto rounded-[18px] p-4 text-label"
     >
       <header className="mb-4 flex items-center justify-between">
         <h2 className="text-[15px] font-semibold tracking-[-0.01em]">Settings</h2>
@@ -108,53 +113,21 @@ export function SettingsPanel({ anchor, onClose }: { anchor: SettingsAnchor; onC
       </Section>
 
       <Section title="Stage">
-        <div role="radiogroup" aria-label="Background" className="grid grid-cols-4 gap-x-1 gap-y-3">
-          {BACKGROUNDS.map((b) => {
-            const on = settings.background === b.id;
-            const adaptive = "dark" in b;
-            const swatch = adaptive
-              ? `linear-gradient(135deg, ${b.light} 0 50%, ${b.dark} 50% 100%)`
-              : b.light;
-            const darkSwatch = stagePalette(b.id, scheme).dark;
-            return (
-              <button
-                key={b.id}
-                type="button"
-                role="radio"
-                aria-checked={on}
-                onClick={() => settingsStore.set({ background: b.id })}
-                className="group flex flex-col items-center gap-1.5 rounded-[10px] py-1 outline-none"
-              >
-                <span
-                  className={`swatch relative flex size-10 items-center justify-center rounded-full ${on ? "swatch-on" : ""}`}
-                  style={{ background: swatch }}
-                >
-                  {on && (
-                    <motion.span
-                      initial={{ scale: 0.5, opacity: 0 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      transition={{ type: "spring", bounce: 0.35, duration: 0.3 }}
-                      className={
-                        adaptive
-                          ? "flex size-6 items-center justify-center rounded-full bg-white text-[#1d1d1f] shadow-[0_1px_3px_rgb(0_0_0/0.3)]"
-                          : darkSwatch
-                            ? "text-white"
-                            : "text-[#1d1d1f]"
-                      }
-                    >
-                      <Check size={adaptive ? 14 : 16} strokeWidth={2.75} aria-hidden />
-                    </motion.span>
-                  )}
-                </span>
-                <span className={`text-[11px] ${on ? "font-semibold text-label" : "text-label-2"}`}>
-                  {b.name}
-                  {adaptive && <span className="sr-only"> (follows theme)</span>}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-3">
+        <div className="flex flex-col gap-3.5">
+          <ColorRow
+            label="Background"
+            value={settings.background}
+            current={stageColor(settings.background, scheme)}
+            options={BACKGROUNDS.map((b) => ({
+              id: b.id,
+              // "Studio" follows the theme: shown half light, half dark.
+              name: "dark" in b ? `${b.name} (follows theme)` : b.name,
+              shortName: b.name,
+              hex: stageColor(b.id, scheme),
+              fill: "dark" in b ? `linear-gradient(135deg, ${b.light} 0 50%, ${b.dark} 50% 100%)` : undefined,
+            }))}
+            onChange={(background) => settingsStore.set({ background })}
+          />
           <Row label="Floor grid">
             <Switch label="Floor grid" on={settings.grid} onChange={(grid) => settingsStore.set({ grid })} />
           </Row>
@@ -166,6 +139,7 @@ export function SettingsPanel({ anchor, onClose }: { anchor: SettingsAnchor; onC
           <ColorRow
             label="Body"
             value={settings.bodyColor}
+            current={bodyHex(settings.bodyColor)}
             options={BODY_COLORS}
             onChange={(bodyColor) => settingsStore.set({ bodyColor })}
           />
@@ -191,6 +165,7 @@ export function SettingsPanel({ anchor, onClose }: { anchor: SettingsAnchor; onC
             <ColorRow
               label="Outline color"
               value={settings.outlineColor}
+              current={outlineHex(settings.outlineColor)}
               options={OUTLINE_COLORS}
               onChange={(outlineColor) => settingsStore.set({ outlineColor })}
             />
@@ -198,17 +173,44 @@ export function SettingsPanel({ anchor, onClose }: { anchor: SettingsAnchor; onC
         </div>
       </Section>
 
-      <Section title="Prompt box" last>
-        <Row label="Pose ideas">
-          <Switch
-            label="Pose ideas"
-            on={settings.promptIdeas}
-            onChange={(promptIdeas) => settingsStore.set({ promptIdeas })}
-          />
-        </Row>
+      <Section title="Interface" last>
+        <div className="flex flex-col gap-3">
+          <DetailRow
+            label="Toolbar"
+            detail={
+              settings.showToolbar
+                ? "Tool buttons at the top right, and the hide button"
+                : "Hidden. Shortcuts still work: press ? for the list"
+            }
+          >
+            <Switch label="Toolbar" on={settings.showToolbar} onChange={(showToolbar) => settingsStore.set({ showToolbar })} />
+          </DetailRow>
+          <DetailRow
+            label="Prompt bar"
+            detail={settings.showPromptBar ? "Describe a pose at the bottom of the stage" : "Hidden. Press / to bring it up"}
+          >
+            <Switch label="Prompt bar" on={settings.showPromptBar} onChange={(showPromptBar) => settingsStore.set({ showPromptBar })} />
+          </DetailRow>
+          <DetailRow label="Pose ideas" detail="Suggestions above the prompt bar">
+            <Switch label="Pose ideas" on={settings.promptIdeas} onChange={(promptIdeas) => settingsStore.set({ promptIdeas })} />
+          </DetailRow>
+        </div>
       </Section>
     </motion.div>,
     document.body,
+  );
+}
+
+/** A setting with a line saying what it does (and, when off, how to reach what it hides). */
+function DetailRow({ label, detail, children }: { label: string; detail: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-[13px]">{label}</p>
+        <p className="text-[11.5px] leading-snug text-label-3">{detail}</p>
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -222,69 +224,45 @@ function Section({ title, last, children }: { title: string; last?: boolean; chi
 }
 
 /**
- * A compact row of colour swatches; the chosen name shows beside the label
- * (names also appear as tooltips), so the row stays one line.
+ * A row of colour swatches ending in a custom colour, as in the lighting
+ * panel. The chosen name shows beside the label (names are also tooltips).
+ * Every row uses the same nine columns, so swatches line up from row to row.
  */
 function ColorRow<T extends string>({
   label,
   value,
+  current,
   options,
   onChange,
 }: {
   label: string;
-  value: T;
-  options: readonly { id: T; name: string; hex: string }[];
-  onChange: (id: T) => void;
+  value: T | HexColor;
+  /** The colour in use (where the custom picker opens). */
+  current: string;
+  options: readonly { id: T; name: string; shortName?: string; hex: string; fill?: string }[];
+  onChange: (id: T | HexColor) => void;
 }) {
-  const current = options.find((o) => o.id === value);
+  const custom = isHex(value);
+  const chosen = options.find((o) => o.id === value);
   return (
     <div>
       <p className="mb-2 flex items-baseline justify-between text-[13px]">
         {label}
-        <span className="text-[12px] text-label-3">{current?.name}</span>
+        <span className="text-[12px] text-label-3">{custom ? "Custom" : (chosen?.shortName ?? chosen?.name)}</span>
       </p>
-      <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-2">
-        {options.map((o) => {
-          const on = o.id === value;
-          const light = isLight(o.hex);
-          return (
-            <button
-              key={o.id}
-              type="button"
-              role="radio"
-              aria-checked={on}
-              aria-label={o.name}
-              data-tip={o.name}
-              onClick={() => onChange(o.id)}
-              className="rounded-full outline-none"
-            >
-              <span
-                className={`swatch flex size-7 items-center justify-center rounded-full ${on ? "swatch-on" : ""}`}
-                style={{ background: o.hex }}
-              >
-                {on && (
-                  <motion.span
-                    initial={{ scale: 0.5, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    transition={{ type: "spring", bounce: 0.35, duration: 0.3 }}
-                    className={light ? "text-[#1d1d1f]" : "text-white"}
-                  >
-                    <Check size={13} strokeWidth={3} aria-hidden />
-                  </motion.span>
-                )}
-              </span>
-            </button>
-          );
-        })}
+      <div role="radiogroup" aria-label={label} className="grid grid-cols-[repeat(9,26px)] justify-between gap-y-2.5">
+        {options.map((o) => (
+          <ColorDot key={o.id} hex={o.hex} fill={o.fill} name={o.name} on={o.id === value} onPick={() => onChange(o.id)} />
+        ))}
+        <CustomColorDot
+          label={`Custom ${label.toLowerCase()}`}
+          value={current}
+          on={custom}
+          onChange={(hex) => isHex(hex) && onChange(hex)}
+        />
       </div>
     </div>
   );
-}
-
-function isLight(hex: string) {
-  const n = parseInt(hex.slice(1), 16);
-  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-  return 0.299 * r + 0.587 * g + 0.114 * b > 150;
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {

@@ -5,6 +5,7 @@ import {
   BACKGROUNDS,
   BODY_COLORS,
   DEFAULT_SETTINGS,
+  isHex,
   OUTLINE_COLORS,
   SETTINGS_KEY,
   type Scheme,
@@ -31,9 +32,10 @@ function load() {
     // The outline used to have its own on/off toggle; it's now "Off" here.
     if (localStorage.getItem(LEGACY_OUTLINE_KEY) === "0" && !raw?.includes('"off"')) settings.outlineWeight = "off";
     localStorage.removeItem(LEGACY_OUTLINE_KEY);
-    if (!BACKGROUNDS.some((b) => b.id === settings.background)) settings.background = "studio";
-    if (!BODY_COLORS.some((c) => c.id === settings.bodyColor)) settings.bodyColor = "clay";
-    if (!OUTLINE_COLORS.some((c) => c.id === settings.outlineColor)) settings.outlineColor = "ink";
+    // A named colour, or a custom one.
+    if (!isHex(settings.background) && !BACKGROUNDS.some((b) => b.id === settings.background)) settings.background = "studio";
+    if (!isHex(settings.bodyColor) && !BODY_COLORS.some((c) => c.id === settings.bodyColor)) settings.bodyColor = "clay";
+    if (!isHex(settings.outlineColor) && !OUTLINE_COLORS.some((c) => c.id === settings.outlineColor)) settings.outlineColor = "ink";
   } catch {}
 }
 

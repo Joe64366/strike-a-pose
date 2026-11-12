@@ -40,7 +40,7 @@ export function JointInspector({ className = "" }: { className?: string }) {
           animate={{ opacity: 1, x: 0, scale: 1 }}
           exit={{ opacity: 0, x: 16, scale: 0.98 }}
           style={{ transformOrigin: "right top" }}
-          className={`material-thick pointer-events-auto max-h-[calc(100dvh-180px)] overflow-y-auto rounded-[20px] p-4 ${className}`}
+          className={`material-thick pointer-events-auto max-h-[calc(100dvh-180px)] overflow-x-hidden overflow-y-auto rounded-[20px] p-4 ${className}`}
           aria-label="Joint controls"
         >
           <Panel id={selected} />
@@ -169,7 +169,7 @@ function Panel({ id }: { id: JointId }) {
             data-tip={`Copy to the ${mirror.startsWith("left") ? "left" : "right"} ${side ? "hand" : "side"}`}
             className="pressable flex h-8 flex-1 items-center justify-center gap-1.5 rounded-[9px] bg-fill text-[13px] font-medium hover:bg-fill-strong"
           >
-            <FlipHorizontal2 size={14} aria-hidden />
+            <FlipHorizontal2 size={14} aria-hidden className="rotate-90" />
             Mirror
           </button>
         )}

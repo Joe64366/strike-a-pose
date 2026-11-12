@@ -129,6 +129,25 @@ body {
   background: rgb(255 255 255 / 0.14);
   color: rgb(245 245 247 / 0.75);
 }
+/* A key on the keyboard, as in macOS help: a small raised cap. */
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font: 500 11.5px/1 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  color: var(--label-2);
+  background: rgb(255 255 255 / 0.9);
+  box-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 1px 0 rgb(0 0 0 / 0.14);
+}
+[data-scheme="dark"] .keycap {
+  background: rgb(255 255 255 / 0.1);
+  box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.12), 0 1px 0 rgb(0 0 0 / 0.5);
+}
 [data-scheme="dark"] {
   .tooltip {
     background: rgb(242 242 245 / 0.96);
@@ -162,9 +181,13 @@ button:active > .swatch { transform: scale(0.96); }
 .swatch-on {
   box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 0 0 2px var(--material), 0 0 0 4px var(--accent);
 }
-button:focus-visible > .swatch {
+button:focus-visible > .swatch,
+.swatch-picker:has(input:focus-visible) {
   box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 0 0 2px var(--material), 0 0 0 4px var(--accent-fill), 0 0 0 5px var(--accent);
 }
+/* The custom-colour swatch is its own target (a label around the picker). */
+.swatch-picker:hover { transform: scale(1.06); }
+.swatch-picker:active { transform: scale(0.96); }
 
 /* Height readout beside the lift guide. */
 .lift-badge {

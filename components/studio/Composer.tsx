@@ -21,8 +21,11 @@ export function Composer({
   busy = false,
   error,
   onRetry,
+  onDismiss,
 }: {
   ref?: Ref<ComposerHandle>;
+  /** Escape, or focus leaving while empty: a bar summoned with / can go away again. */
+  onDismiss?: () => void;
   onSubmit: (prompt: string) => void;
   showSuggestions: boolean;
   placeholder: string;
@@ -74,7 +77,14 @@ export function Composer({
   };
 
   return (
-    <div className="pointer-events-auto flex w-full max-w-[640px] flex-col gap-2.5">
+    <div
+      className="pointer-events-auto flex w-full max-w-[640px] flex-col gap-2.5"
+      // Leaving the composer empty (clicking the stage, tabbing away) lets a
+      // summoned bar step back; anything typed keeps it up.
+      onBlur={(e) => {
+        if (!value.trim() && !e.currentTarget.contains(e.relatedTarget as Node | null)) onDismiss?.();
+      }}
+    >
       <AnimatePresence initial={false}>
         {showSuggestions && !value && (
           <motion.ul
@@ -181,6 +191,7 @@ export function Composer({
               submit();
             } else if (e.key === "Escape") {
               e.currentTarget.blur();
+              onDismiss?.();
             }
           }}
           placeholder={placeholder}

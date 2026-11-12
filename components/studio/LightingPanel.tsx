@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, FlipHorizontal2, Plus, RotateCcw, X } from "lucide-react";
+import { FlipHorizontal2, RotateCcw, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo } from "react";
 import { springSnappy } from "@/lib/motion";
@@ -19,7 +19,9 @@ import {
   useLightingUi,
   type Shading,
 } from "@/lib/lighting";
-import { bodyHex, useSettings } from "@/lib/settings";
+import { bodyHex, silhouetteHex, stageColor, useScheme, useSettings } from "@/lib/settings";
+import { useViewFlip } from "@/lib/viewFlip";
+import { ColorDot, CustomColorDot } from "@/components/ui/ColorSwatches";
 import { Segmented, Switch } from "@/components/ui/Segmented";
 import { BallThumb, LightBall } from "./LightBall";
 
@@ -34,13 +36,22 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
   const lighting = useLighting();
   const selected = useLightingUi((s) => s.selected);
   const view = useLightingUi((s) => s.view);
-  const body = bodyHex(useSettings().bodyColor);
+  const settings = useSettings();
+  const scheme = useScheme();
+  const body = bodyHex(settings.bodyColor);
+  const silhouette = silhouetteHex(stageColor(settings.background, scheme));
   const spec = lighting.lights[selected];
   const presetName = lighting.preset ? PRESETS[lighting.preset].name : "Custom";
+  // Previews follow the shading and grayscale (a silhouette would make them all the same disc).
   const thumbs = useMemo(
-    () => PRESET_IDS.map((id) => ({ id, lighting: fromPreset(id, lighting.shading) })),
-    [lighting.shading],
+    () =>
+      PRESET_IDS.map((id) => ({
+        id,
+        lighting: fromPreset(id, { shading: lighting.shading, silhouette: false, grayscale: lighting.grayscale }),
+      })),
+    [lighting.shading, lighting.grayscale],
   );
+  const mirrored = useViewFlip();
   const set = (patch: Parameters<typeof lightingStore.setLight>[1]) => lightingStore.setLight(selected, patch);
   const customColor = !LIGHT_COLORS.some((c) => c.hex === spec.color);
 
@@ -51,7 +62,7 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
       animate={{ opacity: 1, x: 0, scale: 1 }}
       exit={{ opacity: 0, x: 16, scale: 0.98 }}
       style={{ transformOrigin: "right top" }}
-      className={`material-thick pointer-events-auto max-h-[calc(100dvh-180px)] overflow-y-auto rounded-[20px] p-4 ${className}`}
+      className={`material-thick pointer-events-auto max-h-[calc(100dvh-180px)] overflow-x-hidden overflow-y-auto rounded-[20px] p-4 ${className}`}
       aria-label="Lighting"
     >
       <header className="mb-3 flex items-start gap-2">
@@ -77,7 +88,7 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
           data-tip="Light the other side"
           className="pressable -mt-1 flex size-7 items-center justify-center rounded-full text-label-2 hover:bg-fill hover:text-label"
         >
-          <FlipHorizontal2 size={15} aria-hidden />
+          <FlipHorizontal2 size={15} aria-hidden className="rotate-90" />
         </button>
         <button
           type="button"
@@ -171,7 +182,7 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
 
       <div className={`transition-opacity duration-200 ${spec.on ? "" : "opacity-45"}`}>
         <div className="mt-2">
-          <LightBall size={132} lighting={lighting} view={view} body={body} selected={selected} />
+          <LightBall size={132} lighting={lighting} view={view} body={body} selected={selected} mirrored={mirrored} />
           <p className="mt-1 text-center text-[12px] font-medium text-label-2 tabular-nums">
             {describeDirection(spec.azimuth, spec.elevation)}
           </p>
@@ -198,24 +209,12 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
               {LIGHT_COLORS.map((c) => (
                 <ColorDot key={c.hex} hex={c.hex} name={c.name} on={spec.color === c.hex} onPick={() => set({ color: c.hex })} />
               ))}
-              <label
-                data-tip="Any color"
-                className={`swatch relative flex size-[26px] cursor-pointer items-center justify-center rounded-full ${customColor ? "swatch-on" : ""}`}
-                style={{
-                  background: customColor
-                    ? spec.color
-                    : "conic-gradient(from 0deg, #ff5f57, #febc2e, #28c840, #3fd5c8, #0a84ff, #bf5af2, #ff5f57)",
-                }}
-              >
-                {!customColor && <Plus size={13} strokeWidth={3} className="text-white drop-shadow" aria-hidden />}
-                <input
-                  type="color"
-                  aria-label="Custom light color"
-                  value={spec.color}
-                  onChange={(e) => set({ color: e.target.value })}
-                  className="absolute inset-0 cursor-pointer opacity-0"
-                />
-              </label>
+              <CustomColorDot
+                label="Custom light color"
+                value={spec.color}
+                on={customColor}
+                onChange={(color) => set({ color })}
+              />
             </div>
           </div>
 
@@ -262,7 +261,11 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
           ends={["Dark shadows", "Soft shadows"]}
           onChange={(ambient) => lightingStore.set({ ambient })}
         />
-        <div>
+        {/* A silhouette has no light and shade to band, so shading steps back while it's on. */}
+        <div
+          className={`transition-opacity duration-200 ${lighting.silhouette ? "pointer-events-none opacity-40" : ""}`}
+          aria-disabled={lighting.silhouette || undefined}
+        >
           <p className="mb-1.5 text-[13px] font-medium">Shading</p>
           <Segmented<Shading>
             label="Shading"
@@ -282,6 +285,34 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
                 : "Light, half-tone and shadow."}
           </p>
         </div>
+
+        <div>
+          <p className="mb-1.5 text-[13px] font-medium">Body</p>
+          <div className="overflow-hidden rounded-[12px] bg-fill">
+            <ToggleRow
+              title="Silhouette"
+              detail="One flat shape that stands out from the stage"
+              on={lighting.silhouette}
+              onChange={(silhouette) => lightingStore.set({ silhouette })}
+              accessory={
+                <span
+                  aria-hidden
+                  data-tip="Silhouette colour, from the stage"
+                  className="size-4 shrink-0 rounded-full shadow-[inset_0_0_0_0.5px_rgb(0_0_0/0.25),0_0_0_1.5px_var(--material)]"
+                  style={{ background: silhouette }}
+                />
+              }
+            />
+            <div className="ml-3 h-px bg-fill-strong" />
+            <ToggleRow
+              title="Grayscale"
+              detail={lighting.silhouette ? "Off while the silhouette is on" : "Body and outline in values only, no colour"}
+              on={lighting.grayscale}
+              onChange={(grayscale) => lightingStore.set({ grayscale })}
+              disabled={lighting.silhouette}
+            />
+          </div>
+        </div>
       </div>
 
       <button
@@ -298,35 +329,34 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
   );
 }
 
-function ColorDot({ hex, name, on, onPick }: { hex: string; name: string; on: boolean; onPick: () => void }) {
-  const n = parseInt(hex.slice(1), 16);
-  const light = 0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 150;
+/** One row of a grouped list: title and explanation, an optional accessory, and a switch. */
+function ToggleRow({
+  title,
+  detail,
+  on,
+  onChange,
+  accessory,
+  disabled = false,
+}: {
+  title: string;
+  detail: string;
+  on: boolean;
+  onChange: (on: boolean) => void;
+  accessory?: React.ReactNode;
+  disabled?: boolean;
+}) {
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={on}
-      aria-label={name}
-      data-tip={name}
-      onClick={onPick}
-      className="rounded-full outline-none"
+    <div
+      className={`flex items-center gap-2.5 px-3 py-2.5 transition-opacity duration-200 ${disabled ? "pointer-events-none opacity-40" : ""}`}
+      aria-disabled={disabled || undefined}
     >
-      <span
-        className={`swatch flex size-[26px] items-center justify-center rounded-full ${on ? "swatch-on" : ""}`}
-        style={{ background: hex }}
-      >
-        {on && (
-          <motion.span
-            initial={{ scale: 0.5, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ type: "spring", bounce: 0.35, duration: 0.3 }}
-            className={light ? "text-[#1d1d1f]" : "text-white"}
-          >
-            <Check size={12} strokeWidth={3} aria-hidden />
-          </motion.span>
-        )}
-      </span>
-    </button>
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium">{title}</p>
+        <p className="text-[11px] leading-snug text-label-3">{detail}</p>
+      </div>
+      {accessory}
+      <Switch label={title} on={on && !disabled} onChange={onChange} />
+    </div>
   );
 }
 

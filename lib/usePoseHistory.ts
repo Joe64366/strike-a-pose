@@ -74,6 +74,15 @@ export function usePoseHistory() {
 
   const setStatus = useCallback((id: string, status: PoseStatus) => update(id, { status }), [update]);
 
+  /** New thumbnails for a pose's camera angles (by view id), into whatever angles it has now. */
+  const setThumbs = useCallback((id: string, thumbs: Record<string, string>) => {
+    setEntries((prev) =>
+      prev.map((e) =>
+        e.id === id && e.views ? { ...e, views: e.views.map((v) => (thumbs[v.id] ? { ...v, thumb: thumbs[v.id] } : v)) } : e,
+      ),
+    );
+  }, []);
+
   const rename = useCallback(
     (id: string, title: string) => {
       const clean = title.replace(/\s+/g, " ").trim().slice(0, MAX_TITLE_LENGTH);
@@ -88,5 +97,5 @@ export function usePoseHistory() {
     );
   }, []);
 
-  return { entries, hydrated, add, remove, restore, update, setStatus, rename, togglePin };
+  return { entries, hydrated, add, remove, restore, update, setStatus, setThumbs, rename, togglePin };
 }

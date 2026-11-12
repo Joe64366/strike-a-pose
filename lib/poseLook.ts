@@ -1,6 +1,5 @@
 "use client";
 
-import { cameraBridge } from "./cameraViews";
 import { DEFAULT_LIGHTING, lightingStore, type Lighting } from "./lighting";
 import { DEFAULT_FISHEYE, perspective, type FisheyeLook } from "./perspective";
 import type { PoseEntry } from "./poses";
@@ -16,11 +15,9 @@ export interface PoseLook {
   fisheye: FisheyeLook;
 }
 
-/** The look on stage now (with the lens on, the angle it's looking from). */
+/** The look on stage now. */
 export function currentLook(): PoseLook {
-  const fisheye = perspective.look();
-  const view = fisheye.on ? cameraBridge.get() : null;
-  return { lighting: lightingStore.get(), fisheye: view ? { ...fisheye, view } : fisheye };
+  return { lighting: lightingStore.get(), fisheye: perspective.look() };
 }
 
 const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);

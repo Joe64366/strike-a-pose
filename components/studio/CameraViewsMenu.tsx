@@ -163,7 +163,7 @@ export function CameraViewsMenu({
             </span>
           </p>
           <ul
-            className="grid min-h-0 grid-cols-2 gap-2 overflow-y-auto px-4 pt-2 pb-4"
+            className="grid min-h-0 grid-cols-2 gap-2 overflow-x-hidden overflow-y-auto px-4 pt-2 pb-4"
             aria-label="Saved angles"
           >
             <AnimatePresence initial={false}>
@@ -190,22 +190,7 @@ export function CameraViewsMenu({
                           : "shadow-[0_0_0_0.5px_var(--material-stroke)] hover:shadow-[0_0_0_2px_var(--fill-strong)] focus-visible:shadow-[0_0_0_2px_var(--accent)]"
                       }`}
                     >
-                      <span className="flex aspect-[16/10] items-center justify-center bg-[var(--stage)]">
-                        {v.thumb ? (
-                          // eslint-disable-next-line @next/next/no-img-element -- in-memory data URL
-                          <img
-                            src={v.thumb}
-                            alt=""
-                            className="size-full object-cover"
-                          />
-                        ) : (
-                          <Camera
-                            size={18}
-                            className="text-label-3"
-                            aria-hidden
-                          />
-                        )}
-                      </span>
+                      <Thumb src={v.thumb} />
                       <span className="block bg-[var(--material)] px-2 py-1.5">
                         <span className="block truncate text-[11.5px] leading-tight font-medium">
                           {describeView(v, v.fisheye)}
@@ -235,5 +220,41 @@ export function CameraViewsMenu({
       )}
     </motion.div>,
     document.body,
+  );
+}
+
+/**
+ * An angle's picture. It's re-rendered from the current pose each time the
+ * menu opens; the fresh one fades in over the old (which then goes), so the
+ * swap reads as the picture catching up rather than a flicker.
+ */
+function Thumb({ src }: { src?: string }) {
+  const [top, setTop] = useState(src);
+  // The picture being replaced, kept underneath until the new one covers it.
+  const [under, setUnder] = useState<string | undefined>(undefined);
+  if (src !== top) {
+    setUnder(top);
+    setTop(src);
+  }
+  return (
+    <span className="relative flex aspect-[16/10] items-center justify-center overflow-hidden bg-[var(--stage)]">
+      {!top && !under && <Camera size={18} className="text-label-3" aria-hidden />}
+      {under && (
+        // eslint-disable-next-line @next/next/no-img-element -- in-memory data URL
+        <img src={under} alt="" className="absolute inset-0 size-full object-cover" />
+      )}
+      {top && (
+        <motion.img
+          key={top}
+          src={top}
+          alt=""
+          initial={under ? { opacity: 0 } : false}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.22, ease: "easeOut" }}
+          onAnimationComplete={() => setUnder(undefined)}
+          className="absolute inset-0 size-full object-cover"
+        />
+      )}
+    </span>
   );
 }

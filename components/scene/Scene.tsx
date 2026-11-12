@@ -11,15 +11,17 @@ import { DoubleSide, Vector3, type PerspectiveCamera } from "three";
 import { Suspense, useCallback, useEffect, useRef } from "react";
 import { cameraBridge } from "@/lib/cameraViews";
 import { lightingUi, useLighting } from "@/lib/lighting";
-import { perspective } from "@/lib/perspective";
 import { poseStore } from "@/lib/poseStore";
-import { bodyHex, OUTLINE_PX, outlineHex, stagePalette, useScheme, useSettings } from "@/lib/settings";
+import { viewFlip } from "@/lib/viewFlip";
+import { bodyHex, grayHex, OUTLINE_PX, outlineHex, silhouetteHex, stagePalette, useScheme, useSettings } from "@/lib/settings";
 import { ORBIT_TARGET, VIEW_PRESETS, type ViewPreset, type ViewRequest } from "@/lib/views";
 // Before any shader compiles: smoother soft-shadow filtering.
 import "./softShadows";
+import { lensCompute } from "./lens";
 import { Mannequin } from "./Mannequin";
 import { PerspectiveRig } from "./PerspectiveRig";
 import { StageLights } from "./StageLights";
+import { ViewSnapshots } from "./ViewSnapshots";
 
 /** Environment (reflections + soft bounce) strength at ambient 1. */
 const ENV_AT_FULL = 1.9;
@@ -38,6 +40,7 @@ export default function Scene({ viewRequest, onUserInteract, onReady, leftInset 
   const settings = useSettings();
   const lighting = useLighting();
   const c = stagePalette(settings.background, scheme);
+  const silhouette = silhouetteHex(c.bg);
   const initial = VIEW_PRESETS.front.position;
 
   return (
@@ -81,9 +84,10 @@ export default function Scene({ viewRequest, onUserInteract, onReady, leftInset 
         />
       )}
 
-      {/* Invisible floor that only shows the figure's shadow. */}
+      {/* Invisible floor that only shows the figure's shadow: out to where
+          fog hides the floor, so a low light's long shadow never ends at its edge. */}
       <mesh rotation-x={-Math.PI / 2} position={[0, 0.002, 0]} receiveShadow>
-        <planeGeometry args={[2 * 12, 2 * 12]} />
+        <planeGeometry args={[2 * 40, 2 * 40]} />
         <shadowMaterial transparent opacity={c.shadowOpacity} />
       </mesh>
 
@@ -92,16 +96,35 @@ export default function Scene({ viewRequest, onUserInteract, onReady, leftInset 
           onReady={onReady}
           outline={settings.outlineWeight !== "off"}
           outlineWidth={OUTLINE_PX[settings.outlineWeight]}
-          outlineColor={outlineHex(settings.outlineColor)}
+          // The outline joins the silhouette's colour, or goes grey with the body.
+          outlineColor={
+            lighting.silhouette ? silhouette : lighting.grayscale ? grayHex(outlineHex(settings.outlineColor)) : outlineHex(settings.outlineColor)
+          }
           bodyColor={bodyHex(settings.bodyColor)}
+          silhouette={lighting.silhouette}
+          grayscale={lighting.grayscale}
+          silhouetteColor={silhouette}
         />
       </Suspense>
 
       <Rig viewRequest={viewRequest} onUserInteract={onUserInteract} />
       <PerspectiveRig />
+      <LensEvents />
+      <ViewSnapshots />
       <StageOffset inset={leftInset} />
     </Canvas>
   );
+}
+
+/**
+ * Pointer events (posing, the light bulbs, the body mover) find what's under
+ * the pointer through the lens in use, so they still land on the right part
+ * through the fish-eye lens.
+ */
+function LensEvents() {
+  const setEvents = useThree((s) => s.setEvents);
+  useEffect(() => setEvents({ compute: lensCompute }), [setEvents]);
+  return null;
 }
 
 /**
@@ -119,13 +142,35 @@ function StageOffset({ inset }: { inset: number }) {
     current.current += (target - current.current) * (1 - Math.exp(-delta * 14));
     if (Math.abs(target - current.current) < 0.1) current.current = target;
 
-    const shift = -current.current / 2;
+    // Mirror view shows the picture flipped, so the shift goes the other way
+    // to land the figure beside the sidebar on screen.
+    const shift = (viewFlip.get() ? 1 : -1) * (current.current / 2);
     const view = cam.view;
     if (view && view.offsetX === shift && view.fullWidth === size.width && view.fullHeight === size.height) return;
     cam.setViewOffset(size.width, size.height, shift, 0, size.width, size.height);
   });
 
   return null;
+}
+
+type DragInternals = {
+  _rotateInternal: (dx: number, dy: number) => void;
+  _truckInternal: (dx: number, dy: number, dragToOffset: boolean, screenSpace: boolean) => void;
+  __mirrored?: boolean;
+};
+
+/**
+ * camera-controls reads raw pointer movement; in mirror view the picture is
+ * flipped, so its horizontal drags are flipped back (vertical stays as is).
+ */
+function mirrorDrags(cc: CameraControls) {
+  const c = cc as unknown as DragInternals;
+  if (c.__mirrored) return;
+  c.__mirrored = true;
+  const rotate = c._rotateInternal;
+  const truck = c._truckInternal;
+  c._rotateInternal = (dx, dy) => rotate(viewFlip.get() ? -dx : dx, dy);
+  c._truckInternal = (dx, dy, a, b) => truck(viewFlip.get() ? -dx : dx, dy, a, b);
 }
 
 /** Owns the camera: left-drag orbits, right-drag pans, wheel zooms. */
@@ -167,18 +212,7 @@ function Rig({ viewRequest, onUserInteract }: Pick<SceneProps, "viewRequest" | "
   useEffect(() => {
     const cc = controls.current;
     if (!viewRequest || !cc) return;
-    // With the fish-eye lens on, the camera keeps its close-in distance; a
-    // preset just turns it round the figure.
-    if (perspective.ui().on) {
-      const [x, y, z] = VIEW_PRESETS[viewRequest.preset].position;
-      const [, ty] = ORBIT_TARGET;
-      const azimuth = Math.atan2(x, z);
-      const polar = Math.acos((y - ty) / Math.hypot(x, y - ty, z));
-      // The equivalent angle nearest the current one: the short way round.
-      const goal = azimuth + 2 * Math.PI * Math.round((cc.azimuthAngle - azimuth) / (2 * Math.PI));
-      void cc.rotateTo(goal, polar, true);
-      return;
-    }
+    // The same in both lenses: the fish-eye lens never moves the camera.
     const look = presetLookAt(viewRequest.preset);
     // Orbiting accumulates whole turns (720°, 1080°…); animating straight to
     // the preset would unwind every one of them. Swap in the equivalent angle
@@ -231,6 +265,11 @@ function Rig({ viewRequest, onUserInteract }: Pick<SceneProps, "viewRequest" | "
       (window as unknown as { __scene: unknown }).__scene = getSize().scene;
     }
   }, [getSize]);
+
+  // In mirror view, drags still move the picture the way the pointer goes.
+  useEffect(() => {
+    if (controls.current) mirrorDrags(controls.current);
+  }, []);
 
   useEffect(() => {
     const cc = controls.current;

@@ -97,7 +97,7 @@ export function TimerPanel({
       initial={{ opacity: 0, scale: 0.94 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.14 } }}
-      className="menu-surface fixed z-[80] max-h-[calc(100dvh-24px)] w-[320px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-[18px] p-4 text-label"
+      className="menu-surface fixed z-[80] max-h-[calc(100dvh-24px)] w-[320px] max-w-[calc(100vw-24px)] overflow-x-hidden overflow-y-auto rounded-[18px] p-4 text-label"
     >
       <header className="mb-3 flex items-start justify-between">
         <div>

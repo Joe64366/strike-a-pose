@@ -1,26 +1,35 @@
 import { fingerJoints, HAND_SHAPES, handShapeAngles, type HandShape, type JointId } from "../joints";
 import { compose, decompose, type PoseData, type RigFrames } from "../poseMath";
 import { naturalize } from "./naturalize";
+import { applyPosture } from "./postures";
 import { AI_JOINT_IDS, type AiAngles, type AiHandShape, type AiPose } from "./spec";
+import type { SolveRequest } from "./targets";
 
 const SIDES = ["left", "right"] as const;
 
 /**
- * Model output → a pose the figure can show. Every angle goes through
- * `compose`, which clamps it to the joint's real range, so the result is
- * always anatomically possible whatever the model said.
+ * Model output → a pose the figure can show:
+ *  1. the named posture supplies hips and legs (postures.ts);
+ *  2. the naturalness pass fills in what makes a body look alive;
+ *  3. angles become rotations, each clamped to the joint's real range;
+ *  4. named hand targets and gaze are placed on the real skeleton (`solve`);
+ *  5. the figure rests on the floor, or floats at the asked height.
  */
 export function aiToPose(
   raw: AiPose,
   frames: RigFrames,
   base: PoseData,
   measureLowest: (pose: PoseData) => number | null,
-  { natural = true }: { natural?: boolean } = {},
+  {
+    natural = true,
+    solve,
+  }: { natural?: boolean; solve?: (pose: PoseData, request: SolveRequest) => PoseData } = {},
 ): PoseData {
+  const placed = applyPosture(raw);
   // Fill in what makes a body look alive (weight shift, spine curve, soft
   // joints) before turning angles into rotations.
-  const ai = natural ? naturalize(raw) : raw;
-  const pose: PoseData = {};
+  const ai = natural ? naturalize(placed) : placed;
+  let pose: PoseData = {};
 
   for (const id of AI_JOINT_IDS) {
     const a = ai.pose[id];
@@ -40,6 +49,9 @@ export function aiToPose(
       if (frame) pose[id] = compose(id, { bend, tilt, twist: 0 }, frame);
     }
   }
+
+  // Hands to their targets and the face toward its gaze, on the real skeleton.
+  if (solve) pose = solve(pose, { leftReach: ai.left_reach, rightReach: ai.right_reach, gaze: ai.gaze });
 
   // Stay where the figure was standing; decide floor contact vs. lift.
   const [x, , z] = base.root ?? [0, 0, 0];
@@ -77,8 +89,14 @@ export function poseToAi(pose: PoseData, frames: RigFrames, title: string, floor
     const v: AiAngles = [Math.round(a.bend), Math.round(a.tilt), Math.round(a.twist)];
     if (v.some((n) => n !== 0)) out[id as JointId] = v;
   }
+  // A saved pose is described joint by joint: its legs, arms and head are
+  // exactly what's there, so the model refines from those.
   return {
     title,
+    posture: "custom",
+    left_reach: "none",
+    right_reach: "none",
+    gaze: "none",
     pose: out,
     left_hand: detectHand(pose, frames, "left"),
     right_hand: detectHand(pose, frames, "right"),

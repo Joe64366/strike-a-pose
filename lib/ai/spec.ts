@@ -3,16 +3,22 @@
  * about the body, and the exact JSON shape it must return. Shared by the
  * server route (prompt + schema) and the client (types + conversion).
  *
- * The model speaks the same anatomical vocabulary as the sliders
- * ("upper arm: raise −80 = down by the side"), not raw rotations. The
- * client turns that into quaternions and clamps every angle to the joint's
- * real range, so whatever comes back is physically possible.
+ * The model decides *what* the body does in named terms it handles well,
+ * and code does the geometry it handles badly:
+ *   - posture: how the body is supported → hand-tuned hips and legs (postures.ts)
+ *   - left_reach / right_reach: where each hand goes → solved on the skeleton
+ *   - gaze: where the face points → neck and head turned to match
+ *   - pose: angles for everything else (torso, free arms, custom legs),
+ *     in the same anatomical vocabulary as the sliders, clamped to each
+ *     joint's real range on the client.
  *
- * Kept deliberately compact: every token here costs latency and counts
- * against the free tier's tokens-per-minute.
+ * Kept compact: every token here costs latency and counts against the
+ * free tier's tokens-per-minute.
  */
 
 import { AXES, HAND_SHAPES, JOINTS, type HandShape, type JointId } from "../joints";
+import { POSTURE_IDS, POSTURES, type PostureId } from "./postures";
+import { GAZE_IDS, GAZES, REACH_IDS, REACHES, type Gaze, type Reach } from "./targets";
 
 /** Body joints the model controls. Fingers come from hand shapes. */
 export const AI_JOINTS = JOINTS.filter((j) => !j.group);
@@ -27,6 +33,10 @@ export type AiAngles = [number, number, number];
 
 export interface AiPose {
   title: string;
+  posture: PostureId;
+  left_reach: Reach;
+  right_reach: Reach;
+  gaze: Gaze;
   /** Every body joint, rest = [0,0,0]. */
   pose: Partial<Record<JointId, AiAngles>>;
   left_hand: AiHandShape;
@@ -38,11 +48,19 @@ export interface AiPose {
 
 const angles = { type: "array", items: { type: "number" } } as const;
 
-/** Strict JSON Schema (every property required, no extras) for constrained decoding. */
+/**
+ * Strict JSON Schema (every property required, no extras) for constrained
+ * decoding. The named decisions come before the angles, so the model
+ * settles what the body does before writing numbers.
+ */
 export const AI_POSE_SCHEMA = {
   type: "object",
   properties: {
     title: { type: "string" },
+    posture: { type: "string", enum: POSTURE_IDS },
+    left_reach: { type: "string", enum: REACH_IDS },
+    right_reach: { type: "string", enum: REACH_IDS },
+    gaze: { type: "string", enum: GAZE_IDS },
     pose: {
       type: "object",
       properties: Object.fromEntries(AI_JOINT_IDS.map((id) => [id, angles])),
@@ -54,7 +72,7 @@ export const AI_POSE_SCHEMA = {
     stick_to_floor: { type: "boolean" },
     lift_cm: { type: "number" },
   },
-  required: ["title", "pose", "left_hand", "right_hand", "stick_to_floor", "lift_cm"],
+  required: ["title", "posture", "left_reach", "right_reach", "gaze", "pose", "left_hand", "right_hand", "stick_to_floor", "lift_cm"],
   additionalProperties: false,
 } as const;
 
@@ -64,54 +82,73 @@ function jointReference(): string {
     const parts = AXES.map((k) => {
       const a = j[k];
       return a ? `${a.label.toLowerCase()} ${a.ends[0].toLowerCase()}−/${a.ends[1].toLowerCase()}+ ${a.min}..${a.max}` : "0";
-    });
-    return `${j.id}: [${parts.join(" | ")}]`;
+    }).join(" | ");
+    return `${j.id}: [${parts}]`;
   }).join("\n");
 }
+
+const list = (entries: Record<string, string>) =>
+  Object.entries(entries)
+    .map(([id, what]) => `  ${id}: ${what}`)
+    .join("\n");
 
 // Examples list only the joints that move (the rest are [0,0,0]) to save tokens.
 const example = (prompt: string, p: AiPose) => `"${prompt}" → ${JSON.stringify(p)}`;
 
 export function systemPrompt(): string {
-  return `You pose a 3D mannequin for artists' drawing reference. Turn the request into joint angles for a believable, physically possible pose.
+  return `You pose a 3D mannequin for artists' drawing reference. Read the request, decide what the body does, and answer in JSON. Code turns your named choices into exact geometry, so choose them carefully; write angles only for what they don't cover.
 
-REST (all 0) = T-pose: standing straight, facing the viewer, arms straight out sideways at shoulder height, palms down, legs straight. Angles are degrees relative to the parent segment. left/right = the CHARACTER's own sides.
-
-Each joint is [bend, tilt, twist] (meaning negative−/positive+ min..max):
+1. posture: how the body is supported. Code builds the hips and legs for every posture except custom.
+${list(Object.fromEntries(POSTURE_IDS.map((id) => [id, POSTURES[id].hint])))}
+2. left_reach / right_reach: where each hand goes. Code places the whole arm so the hand lands there.
+${list(REACHES)}
+3. gaze: where the face points. Code turns the neck and head.
+${list(GAZES)}
+4. pose: every joint as [bend, tilt, twist] in degrees (meaning negative−/positive+ min..max), relative to the parent segment:
 ${jointReference()}
+Joints a choice above decides are ignored, so write [0,0,0] for them: hips bend/tilt and all leg joints for any posture except custom (hips twist still turns the whole body); upperArm and forearm of a reached arm; neck and head bend/twist when gaze isn't none. Always write the torso (spine, chest, shoulders), free arms, and custom legs.
 
-FACTS
-- The rest pose's straight-out arms almost never occur in real poses: any arm the request doesn't place hangs relaxed (upperArm raise -75..-85, forearm elbow 5-20).
-- Arms down at the sides: upperArm raise ≈-80. Overhead: raise ≈85. Reaching forward: upperArm swing ≈90, raise 0.
-- Hand to face/chest: upperArm swing forward + raise down, forearm elbow 100-145.
-- Knees bend backward only (shin +). Thigh swing + lifts the leg forward.
-- hips turns the WHOLE body: bend -90 = lying on back, +90 = face down; tilt ±85 = on a side; twist = face another way.
-- Sit on a chair/ledge (unseen): thighs ≈90, shins ≈90. Crouch/squat (feet on floor, knees up): thighs ≈100, shins ≈120, waist bend +.
-- Knee on the floor: that shin lies flat behind it, so shin bend ≈ thigh bend + 90 − hips bend (leaning the hips back swings the legs forward: add shin). Kneel upright: thigh 0, shin 95. Sitting back toward the heels: thigh 50, shin 140. One knee down: the other leg's foot planted in front, thigh ≈85, shin ≈90.
-- Cross-legged on the floor: hips [-10,0,0], both thighs [90,55,65], both shins [150,0,0].
-- Running stride: front thigh [60,3,0] shin [75,0,0]; back thigh [-25,3,0] shin [35,0,0] foot [25,0,0]; arms swing opposite to legs (upperArm swing ±35..55, raise -72, forearm elbow 90), fists, spine bend 10.
-- Turning/looking back: share the twist across spine, chest, neck, head (e.g. 25, 25, 40, 35; + = toward the character's right). Looking behind is a twist, never a backward bend (bend − = looking up).
-- Hand raised beside the head (wave, hi, oath): upperArm [0,10,85], forearm [90,0,0], hand open.
-- Holding something in front (book, phone, cup): upperArm swing 30-45, raise -60, forearm elbow 100-115, and neck/head bend + to look at it.
-- On one leg: hips stays level (tilt within ±5), the standing leg straight under the body, the free leg's thigh swings or spreads.
-- Falling backward: hips bend -30..-50 (tipped back), arms flung forward/up, a leg rising; airborne.
-- Curl or bow: share the bend across spine, chest, neck. Look down: neck/head bend +.
-- Leg extended behind (arabesque, back kick): thighs can't swing back past -35, so tip the body: hips bend 40-55, standing thigh bend = the hips bend (keeps it vertical), free thigh -35, spine -20 and chest -10 to lift the chest.
-- Something held to the eye (telescope, binoculars, camera): near arm upperArm [60,-25,30] forearm [145,0,0]; far arm upperArm [85,-5,45] forearm [55,0,0]; fists.
+REST (all 0) = T-pose: standing straight, facing the viewer, arms straight out sideways at shoulder height, palms down, legs straight. left/right = the CHARACTER's own sides.
 
-REALISM: keep the centre of mass over the support and balance leans; natural asymmetry and slight bends (elbows 5-15); no limbs through the body; show emotion with head, shoulders, spine and hands.
+CHOOSING
+- Prefer a named reach whenever a hand has somewhere to be; write arm angles only for free arms (hanging, swinging, gesturing loosely).
+- Gaze follows what the request implies about the eyes: crying, grief, shame, reading, praying, looking at the ground → down; sky, hope, awe → up; looking behind → over a shoulder; using a phone or book → at that hand. It turns the head a lot (about 60° for left/right), so for a slight turn or tilt use none and write neck/head angles.
 
-FLOOR: stick_to_floor true if anything rests on the ground (standing, kneeling, sitting, lying, crouching), lift_cm 0. false only when airborne (jump, leap, fall, fly, float); lift_cm = gap below the lowest body part (jump 20-80, leap 40-120, float 30-150).
+BODY FACTS
+- Any arm the request doesn't place hangs relaxed: upperArm raise -75..-85, forearm elbow 5-20.
+- Holding something in front (book, phone, cup): upperArm swing 30-45, raise -60, forearm elbow 100-115, gaze at that hand.
+- Turning the body: share the twist across spine and chest (e.g. 20, 20) and use gaze for the head; looking behind is a twist, never a backward bend.
+- Curl or bow: share the bend across spine and chest. Lean back: spine and chest bend −.
+- Custom legs. Standing: thighs [0,4,0]. Walking stride: front thigh [25,3,0] shin [10,0,0]; back thigh [-15,3,0] shin [20,0,0]; arms swing opposite to legs (upperArm swing ±20, raise -80). Running: front thigh [60,3,0] shin [75,0,0]; back thigh [-25,3,0] shin [35,0,0] foot [25,0,0]; arms opposite (upperArm swing ±35..55, raise -72, forearm 90), fists, spine bend 10. On one leg: the standing leg straight under the body, the free thigh swings or spreads. Leg behind (arabesque): hips bend 40-55, standing thigh bend = hips bend, free thigh -35, spine -20.
 
-HANDS: relaxed | open | spread | fist | point | keep (keep = leave current fingers).
+EMOTION shows in the head, shoulders, spine and hands, not only the face:
+- crying, grief: gaze down, a hand or both on the face or eyes, spine 15-25 and chest 10 forward, shoulders shrug 10-15.
+- despair: hands top_of_head or face, gaze down, curled spine.
+- thinking: a hand at the chin, the other crossed or on the hip; gaze down or up a little.
+- shy, nervous: gaze down, hands prayer or stomach, shoulders up and forward.
+- proud, confident: hands on hips, chest up (spine -8, chest -5), gaze forward or up.
+- angry: fists, spine bend 10 forward, shoulders up, gaze forward.
+- scared: hands to face or chest, spine leaning back, shoulders up, gaze to a side.
+- joy, triumph: both reaches overhead (or fists up), gaze up, open or spread hands; airborne if jumping.
+- tired: gaze down, spine forward, arms hanging; sit or squat if it fits.
 
-REFERENCES: a request may come with motion-capture frames of real people doing something related (same angle format; omitted joints ≈ 0). They show how real bodies arrange themselves — weight, leg folds, arm paths, head and spine — so borrow their realism, not their exact numbers. Build the pose the REQUEST describes: combine parts of several references (e.g. the legs of a kneel with the arms and head of crying), adapt them to every detail asked (direction, side, intensity, props, mood), and ignore any that don't fit. Never copy a reference's numbers for a whole limb or return one unchanged; each answer should be its own pose. A VARIATION line says how to make this answer different; follow it wherever the request leaves room.
+REALISM: keep the centre of mass over the support; natural asymmetry (arms and legs never mirror exactly); soft joints (elbows 5-15); no limbs through the body.
 
-Give every joint (rest = [0,0,0]). To refine a CURRENT POSE, start from it and change only what is asked. title: 2-4 word Title Case.
+FLOOR: stick_to_floor true if anything rests on the ground, lift_cm 0. false only when airborne (jump, leap, fall, fly, float), with posture custom; lift_cm = gap below the lowest body part (jump 20-80, leap 40-120, float 30-150).
+
+HANDS (finger shape): relaxed | open | spread | fist | point | keep (keep = leave current fingers).
+
+REFERENCES: a request may come with motion-capture frames of real people doing something related (same angle format, all posture custom; omitted joints ≈ 0). Borrow their realism (weight, leg and arm paths, head and spine), not their exact numbers; adapt them to every detail asked and ignore any that don't fit. A VARIATION line says how to make this answer different; follow it wherever the request leaves room.
+
+To refine a CURRENT POSE, start from it and change only what is asked (its posture is custom: keep its legs unless asked to change the support). title: 2-4 word Title Case.
 
 EXAMPLES (joints not shown are [0,0,0]; your answer must still list every joint)
 ${example("standing relaxed", {
   title: "Relaxed Stance",
+  posture: "custom",
+  left_reach: "none",
+  right_reach: "none",
+  gaze: "forward",
   pose: {
     leftUpperArm: [5, -80, 0],
     rightUpperArm: [5, -80, 0],
@@ -125,23 +162,22 @@ ${example("standing relaxed", {
   stick_to_floor: true,
   lift_cm: 0,
 })}
-${example("jumping for joy, arms up", {
-  title: "Jump for Joy",
+${example("shy, sitting on the edge of the bed", {
+  title: "Shy on the Bed",
+  posture: "sit_chair",
+  left_reach: "lap",
+  right_reach: "lap",
+  gaze: "down",
   pose: {
-    head: [-15, 0, 0],
-    leftUpperArm: [10, 70, 0],
-    rightUpperArm: [10, 70, 0],
-    leftForearm: [15, 0, 0],
-    rightForearm: [15, 0, 0],
-    leftThigh: [25, 8, 0],
-    rightThigh: [10, 8, 0],
-    leftShin: [70, 0, 0],
-    rightShin: [50, 0, 0],
+    spine: [12, 0, 0],
+    chest: [6, 0, 0],
+    leftShoulder: [8, 12, 0],
+    rightShoulder: [8, 12, 0],
   },
-  left_hand: "spread",
-  right_hand: "spread",
-  stick_to_floor: false,
-  lift_cm: 45,
+  left_hand: "relaxed",
+  right_hand: "relaxed",
+  stick_to_floor: true,
+  lift_cm: 0,
 })}`;
 }
 
@@ -172,10 +208,11 @@ CHANGE: ${prompt}`;
  * doesn't already decide.
  */
 // Upper body and mood only: varying the legs risks breaking the support
-// (a kneel told "weight on one leg" stands up).
+// (a kneel told "weight on one leg" stands up). Head variations are tilts:
+// a turn here would fight the gaze the request implies (crying looks down).
 const VARIATIONS = [
   ["the left arm leads", "the right arm leads", "arms clearly asymmetric", "arms closer to the body", "elbows a little wider"],
-  ["head turned a little left", "head turned a little right", "head tilted", "gaze lowered", "gaze raised"],
+  ["head tilted a little left", "head tilted a little right", "chin slightly tucked", "chin slightly lifted"],
   ["torso turned slightly left", "torso turned slightly right", "torso square on", "a little more lean", "a little less lean"],
   ["subtle and restrained", "bold and expressive", "relaxed", "tense"],
 ] as const;
@@ -186,6 +223,8 @@ export function pickVariation(random: () => number = Math.random): string {
 
 const SHAPES = new Set<string>(AI_HAND_SHAPES);
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v * 10) / 10 : 0);
+const oneOf = <T extends string>(v: unknown, ids: readonly T[], fallback: T): T =>
+  typeof v === "string" && (ids as readonly string[]).includes(v) ? (v as T) : fallback;
 
 /** Accept only well-formed output; unknown joints and junk values are dropped. */
 export function sanitizeAiPose(raw: unknown): AiPose | null {
@@ -204,6 +243,10 @@ export function sanitizeAiPose(raw: unknown): AiPose | null {
   const title = typeof r.title === "string" ? r.title.replace(/\s+/g, " ").trim().slice(0, 48) : "";
   return {
     title: title || "New Pose",
+    posture: oneOf(r.posture, POSTURE_IDS, "custom"),
+    left_reach: oneOf(r.left_reach, REACH_IDS, "none"),
+    right_reach: oneOf(r.right_reach, REACH_IDS, "none"),
+    gaze: oneOf(r.gaze, GAZE_IDS, "none"),
     pose,
     left_hand: hand(r.left_hand),
     right_hand: hand(r.right_hand),

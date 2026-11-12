@@ -2,14 +2,14 @@
 
 import { X } from "lucide-react";
 import { motion } from "motion/react";
-import { CURVE_MAX, CURVE_MIN, EYE_MARKS, EYE_MAX, EYE_MIN, perspective, usePerspective } from "@/lib/perspective";
+import { CURVE_MAX, CURVE_MIN, perspective, usePerspective } from "@/lib/perspective";
 import { Segmented, Switch } from "@/components/ui/Segmented";
 
 /**
  * The fish-eye lens menu: switch the lens on or off, and set how strongly it
- * curves, where the eye sits, and the guide lines that show the space
- * bending. Opening it doesn't turn the lens on; closing it leaves the lens as
- * it is. The settings can be prepared before switching it on.
+ * curves and the guide lines that show the space bending. Opening it doesn't
+ * turn the lens on; closing it leaves the lens as it is. The lens never moves
+ * the camera.
  */
 export function PerspectivePanel({
   className = "",
@@ -31,7 +31,7 @@ export function PerspectivePanel({
       animate={{ opacity: 1, x: 0, scale: 1 }}
       exit={{ opacity: 0, x: 16, scale: 0.98 }}
       style={{ transformOrigin: "right top" }}
-      className={`material-thick pointer-events-auto max-h-[calc(100dvh-180px)] overflow-y-auto rounded-[20px] p-4 ${className}`}
+      className={`material-thick pointer-events-auto max-h-[calc(100dvh-180px)] overflow-x-hidden overflow-y-auto rounded-[20px] p-4 ${className}`}
       aria-label="Fish-eye lens"
     >
       <header className="mb-3 flex items-start gap-2">
@@ -56,7 +56,7 @@ export function PerspectivePanel({
         <div className="min-w-0">
           <p className="text-[13px] font-medium">{on ? "Fish-eye is on" : "Fish-eye is off"}</p>
           <p className="text-[11px] leading-snug text-label-3">
-            {on ? "Posing pauses while it's on" : "Turn it on to see the figure through the lens"}
+            {on ? "Pose and light the figure as usual" : "Turn it on to see the figure through the lens"}
           </p>
         </div>
         <Switch label="Fish-eye lens" on={on} onChange={onToggle} />
@@ -75,45 +75,19 @@ export function PerspectivePanel({
         />
 
         <div>
-          <Slider
-            label="Eye level"
-            value={p.eye}
-            min={EYE_MIN}
-            max={EYE_MAX}
-            step={0.05}
-            format={(v) => `${v.toFixed(2)} m`}
-            onChange={(eye) => perspective.set({ eye })}
-          />
-          <div className="relative mt-0.5 h-3.5 text-[10.5px] text-label-3">
-            {EYE_MARKS.map((m) => (
-              <button
-                key={m.name}
-                type="button"
-                onClick={() => perspective.set({ eye: m.at })}
-                // The first mark sits at the very start: anchor it left so it doesn't spill out.
-                className={`absolute hover:text-label ${m.at === EYE_MARKS[0].at ? "" : "-translate-x-1/2"}`}
-                style={{ left: `${((m.at - EYE_MIN) / (EYE_MAX - EYE_MIN)) * 100}%` }}
-              >
-                {m.name}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[13px] font-medium">Guides</p>
               <p className="text-[11px] text-label-3">Lines that show the space bending</p>
             </div>
-            <Switch label="Guides" on={p.guides} onChange={(guides) => perspective.set({ guides }, false)} />
+            <Switch label="Guides" on={p.guides} onChange={(guides) => perspective.set({ guides })} />
           </div>
           {p.guides && (
             <div className="mt-2">
               <Segmented<string>
                 label="Guide lines"
                 value={p.dense ? "more" : "few"}
-                onChange={(v) => perspective.set({ dense: v === "more" }, false)}
+                onChange={(v) => perspective.set({ dense: v === "more" })}
                 options={[
                   { value: "few", label: "Fewer lines" },
                   { value: "more", label: "More lines" },
@@ -125,8 +99,8 @@ export function PerspectivePanel({
 
         <p className="text-[11px] leading-snug text-label-3">
           {on
-            ? "Drag to look around. Turning it off takes you back to your previous view, and turning it on again carries on from here."
-            : "These settings apply as soon as you turn the lens on."}
+            ? "Same camera, wider lens: turning it off keeps this exact view."
+            : "Turning it on keeps your view: only the lens changes."}
         </p>
       </div>
     </motion.section>

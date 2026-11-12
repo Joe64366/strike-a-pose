@@ -125,9 +125,13 @@ function cleanName(file: string) {
   return path
     .basename(file, path.extname(file))
     .replace(/\s*\(\d+\)\s*$/, "")
+    // "action-walk-stride" → "walk stride": a category prefix isn't what the pose shows.
+    .replace(/^(action|pose|anim|mixamo)[-_\s]+/i, "")
+    .replace(/[-_]+/g, " ")
     .replace(/\b(Female|Male)\b/gi, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /* ------------------------------------------------------------ describe */
@@ -161,12 +165,18 @@ function describe({ angles, at, liftCm, facing }: Body): string[] {
   for (const s of ["left", "right"] as const) {
     const thigh = a(`${s}Thigh`)[0];
     const shin = a(`${s}Shin`)[0];
+    const other = a(`${s === "left" ? "right" : "left"}Thigh`)[0];
     // Kneeling means a knee is actually on (or at) the floor.
     const knee = at(s === "left" ? "LeftLeg" : "RightLeg");
     if (!lying && liftCm <= AIRBORNE_CM && shin > 70 && knee.y < 16) tags.add("kneeling");
-    if (thigh > 60 && !lying && liftCm <= 6) tags.add(hipsY < 40 ? "sitting on floor" : shin > 100 ? "crouching" : "sitting");
+    // Sitting and crouching fold both legs; one high thigh alone is a stride or a raised knee.
+    if (thigh > 60 && other > 45 && !lying && liftCm <= 6) tags.add(hipsY < 40 ? "sitting on floor" : shin > 100 ? "crouching" : "sitting");
     if (thigh > 45 && shin < 60 && hipsY > 80) tags.add("leg raised");
   }
+  // Gait: one leg ahead, the other behind (walk, run, lunge).
+  const lt = a("leftThigh")[0];
+  const rt = a("rightThigh")[0];
+  if (!lying && Math.max(lt, rt) > 15 && Math.min(lt, rt) < -5) tags.add("legs apart front to back");
   const spineBend = a("spine")[0] + a("chest")[0];
   if (!lying && spineBend + hb > 35) tags.add("leaning forward");
   if (!lying && spineBend + hb < -20) tags.add("leaning back");

@@ -1,10 +1,10 @@
 "use client";
 
-import { Billboard, Html, Line } from "@react-three/drei";
+import { Line } from "@react-three/drei";
 import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import type CameraControlsImpl from "camera-controls";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Color, Quaternion, Raycaster, Vector2, Vector3, type DirectionalLight, type Group } from "three";
+import { Color, Quaternion, Raycaster, Vector2, Vector3, type Camera, type DirectionalLight, type Group } from "three";
 import {
   anglesOf,
   describeDirection,
@@ -21,9 +21,11 @@ import {
   type LightId,
   type LightSpec,
 } from "@/lib/lighting";
-import { usePerspectiveUi } from "@/lib/perspective";
 import { poseStore } from "@/lib/poseStore";
-import { SHADOW_DEPTH, SHADOW_HALF_SIZE, shadowBiasFor, shadowMapSize } from "./softShadows";
+import { LensHtml } from "./LensHtml";
+import { lensMarkerScale, lensOn, pointerNdc, setPointerRay } from "./lens";
+import { NO_SNAPSHOT } from "./snapshotPrep";
+import { SHADOW_FAR_REACH, SHADOW_HALF_SIZE, SHADOW_NEAR_REACH, shadowBiasFor, shadowMapSize } from "./softShadows";
 
 /** Chest height of the 1.8 m figure: what every light aims at. */
 const CENTER_Y = 0.95;
@@ -48,6 +50,19 @@ function setCursor(el: HTMLElement, cursor: string) {
   el.style.cursor = cursor;
 }
 
+const camAt = new Vector3();
+/**
+ * Turn a bulb's disc toward the viewer. Normally square to the screen (like a
+ * billboard); through the fish-eye lens, toward the camera itself, since a
+ * bulb out at the side of the lens's wide view would otherwise be seen edge-on.
+ * (Its parent groups only move and scale, never turn.)
+ */
+function faceCamera(o: Group | null, camera: Camera) {
+  if (!o) return;
+  if (lensOn()) o.lookAt(camera.getWorldPosition(camAt));
+  else o.quaternion.copy(camera.quaternion);
+}
+
 /**
  * The stage's lights: sky fill plus key, fill and rim, all aimed at the
  * figure and travelling with it. While the lighting panel is open, each
@@ -56,15 +71,14 @@ function setCursor(el: HTMLElement, cursor: string) {
 export function StageLights({ ground }: { ground: string }) {
   const lighting = useLighting();
   const open = useLightingUi((s) => s.open);
-  const fisheye = usePerspectiveUi((u) => u.on);
   return (
     <>
       <hemisphereLight color="#ffffff" groundColor={ground} intensity={lighting.ambient * HEMI_AT_FULL} />
       {LIGHT_IDS.map((id) => (
         <SceneLight key={id} spec={lighting.lights[id]} maxMapSize={id === "key" ? 2048 : 1024} />
       ))}
-      {/* Not through the fish-eye lens: a drag would land somewhere else on the bent image. */}
-      {open && !fisheye && LIGHT_IDS.map((id) => <LightHandle key={id} id={id} spec={lighting.lights[id]} />)}
+      {/* Through the fish-eye lens too: picking and labels go through it (lens.ts). */}
+      {open && LIGHT_IDS.map((id) => <LightHandle key={id} id={id} spec={lighting.lights[id]} />)}
     </>
   );
 }
@@ -112,7 +126,8 @@ function SceneLight({ spec, maxMapSize }: { spec: LightSpec; maxMapSize: number 
       shadow-bias={0}
       shadow-normalBias={shadowBiasFor(mapSize)}
     >
-      {/* Depth range just covers the figure (light sits 8 m out): finer depth steps. */}
+      {/* From just in front of the figure (the light sits 8 m out) to well past
+          it, so a low light's long shadow is never cut off (see softShadows.ts). */}
       <orthographicCamera
         attach="shadow-camera"
         args={[
@@ -120,8 +135,8 @@ function SceneLight({ spec, maxMapSize }: { spec: LightSpec; maxMapSize: number 
           SHADOW_HALF_SIZE,
           SHADOW_HALF_SIZE,
           -SHADOW_HALF_SIZE,
-          LIGHT_DISTANCE - SHADOW_DEPTH / 2,
-          LIGHT_DISTANCE + SHADOW_DEPTH / 2,
+          LIGHT_DISTANCE - SHADOW_NEAR_REACH,
+          LIGHT_DISTANCE + SHADOW_FAR_REACH,
         ]}
       />
     </directionalLight>
@@ -143,6 +158,7 @@ function LightHandle({ id, spec }: { id: LightId; spec: LightSpec }) {
   const getState = useThree((s) => s.get);
   const group = useRef<Group>(null);
   const bulb = useRef<Group>(null);
+  const face = useRef<Group>(null);
   const [hot, setHot] = useState(false);
   const [behind, setBehind] = useState(false);
   const behindRef = useRef(false);
@@ -155,8 +171,9 @@ function LightHandle({ id, spec }: { id: LightId; spec: LightSpec }) {
     if (!g) return;
     figureCenter(tmp.center);
     g.position.copy(tmp.center).addScaledVector(d, HANDLE_RADIUS);
-    // Same size on screen however near or far the bulb is.
-    bulb.current?.scale.setScalar(camera.position.distanceTo(g.position) * BULB_SCREEN_SCALE);
+    // Same size on screen however near or far the bulb is (and through the lens).
+    bulb.current?.scale.setScalar(camera.position.distanceTo(g.position) * BULB_SCREEN_SCALE * lensMarkerScale(camera));
+    faceCamera(face.current, camera);
     camera.getWorldPosition(tmp.cam).sub(tmp.center);
     const b = d.dot(tmp.cam) < 0;
     if (b !== behindRef.current) {
@@ -198,8 +215,8 @@ function LightHandle({ id, spec }: { id: LightId; spec: LightSpec }) {
     const move = (ev: PointerEvent) => {
       if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 3) return;
       moved = true;
-      ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
-      raycaster.setFromCamera(ndc, camera);
+      pointerNdc(ev.clientX, ev.clientY, rect, ndc);
+      setPointerRay(raycaster, ndc, camera, rect.width / rect.height);
       const { origin, direction } = raycaster.ray;
       // Closest point on the pointer's ray to the figure's centre.
       c.copy(origin).addScaledVector(direction, center.clone().sub(origin).dot(direction));
@@ -207,7 +224,11 @@ function LightHandle({ id, spec }: { id: LightId; spec: LightSpec }) {
       const r = u.length() / HANDLE_RADIUS;
       if (u.lengthSq() < 1e-10) u.set(0, 1, 0);
       u.normalize();
-      if (r <= 1) {
+      if (origin.distanceTo(center) < HANDLE_RADIUS) {
+        // The camera is inside the bulbs' sphere (the fish-eye lens works up
+        // close): every ray meets it once ahead, right where you point.
+        v.copy(u).multiplyScalar(r).addScaledVector(direction, Math.sqrt(Math.max(0, 1 - r * r)));
+      } else if (r <= 1) {
         // On the sphere: the near face if the bulb is in front, the far face if behind.
         if (past > 0.35) side = -side; // came back in after going round the edge
         past = 0;
@@ -240,7 +261,7 @@ function LightHandle({ id, spec }: { id: LightId; spec: LightSpec }) {
   const overlay = { transparent: true, depthTest: false, depthWrite: false, toneMapped: false } as const;
 
   return (
-    <group ref={group}>
+    <group ref={group} userData={NO_SNAPSHOT}>
       <group ref={bulb}>
       {/* Generous grab target. */}
       <mesh
@@ -263,7 +284,7 @@ function LightHandle({ id, spec }: { id: LightId; spec: LightSpec }) {
         <meshBasicMaterial {...overlay} opacity={0} />
       </mesh>
 
-      <Billboard>
+      <group ref={face}>
         {spec.on && (
           <mesh renderOrder={20} raycast={noRaycast}>
             <circleGeometry args={[strong ? 0.17 : 0.135, 48]} />
@@ -278,7 +299,7 @@ function LightHandle({ id, spec }: { id: LightId; spec: LightSpec }) {
           <circleGeometry args={[0.06, 40]} />
           <meshBasicMaterial {...overlay} color={color} opacity={(spec.on ? 1 : 0.6) * fade} />
         </mesh>
-      </Billboard>
+      </group>
 
       {/* Arrowhead: which way the light shines. */}
       {spec.on && (
@@ -287,12 +308,12 @@ function LightHandle({ id, spec }: { id: LightId; spec: LightSpec }) {
           <meshBasicMaterial {...overlay} color={color} opacity={fade} />
         </mesh>
       )}
-      <Html position={[0, 0.2, 0]} center zIndexRange={[5, 0]} style={{ pointerEvents: "none" }}>
+      <LensHtml position={[0, 0.2, 0]} center zIndexRange={[5, 0]} style={{ pointerEvents: "none" }}>
         <div className={`light-badge ${selected ? "light-badge-on" : ""} ${behind && !dragging ? "opacity-60" : ""}`}>
           {LIGHT_INFO[id].name}
           {!spec.on && <span className="font-normal opacity-75"> · off</span>}
         </div>
-      </Html>
+      </LensHtml>
       </group>
 
       {/* The beam: a dashed line from the bulb toward the figure. */}
@@ -346,9 +367,9 @@ function OrbitGuides({ dir, color, spec }: { dir: [number, number, number]; colo
     <>
       <Line points={ring} color={color} lineWidth={1} transparent opacity={0.45} depthTest={false} renderOrder={18} />
       <Line points={arc} color={color} lineWidth={1} dashed dashSize={0.04} gapSize={0.04} transparent opacity={0.4} depthTest={false} renderOrder={18} />
-      <Html position={[0, -0.2, 0]} center zIndexRange={[5, 0]} style={{ pointerEvents: "none" }}>
+      <LensHtml position={[0, -0.2, 0]} center zIndexRange={[5, 0]} style={{ pointerEvents: "none" }}>
         <div className="light-readout">{describeDirection(spec.azimuth, spec.elevation)}</div>
-      </Html>
+      </LensHtml>
     </>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { Html, useGLTF } from "@react-three/drei";
+import { useGLTF } from "@react-three/drei";
 import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import type CameraControlsImpl from "camera-controls";
 import { useEffect, useMemo, useRef } from "react";
@@ -24,6 +24,11 @@ import { constrain, IDENTITY, toQuat, type PoseData } from "@/lib/poseMath";
 import { poseStore, usePoseStore } from "@/lib/poseStore";
 import { OutlineMaterial } from "./outlineMaterial";
 import { BodyMover } from "./BodyMover";
+import { LensHtml } from "./LensHtml";
+import { canvasToClientX, lensOn, pointerNdc, projectToCanvas, setPointerRay } from "./lens";
+import { viewFlip } from "@/lib/viewFlip";
+import { createPoseSolver } from "./poseSolver";
+import { registerSnapshotStep } from "./snapshotPrep";
 import { buildRig, NO_JOINT, type Rig, type RigJoint } from "./rig";
 
 export const MODEL_URL = "/models/mannequin.glb";
@@ -75,12 +80,41 @@ function measurePose(place: Group, ground: Group, rig: Rig, pose: PoseData): num
   return lowest;
 }
 
+/**
+ * Put the figure where its easing is headed: the store's pose, at its final
+ * spot and height (grounded: lowest point on the floor; floating: its saved
+ * height). Returns the undo, back to exactly where the easing had got to.
+ * Camera-angle thumbnails use it so a pose that's still gliding into place
+ * is pictured as it will end up, not mid-move.
+ */
+function showFinalPose(place: Group, ground: Group, rig: Rig, pose: PoseData): () => void {
+  const snap = rig.snapshot();
+  const at = place.position.clone();
+  const height = ground.position.y;
+  rig.applyRaw(pose);
+  const [x, h, z] = pose.root ?? [0, 0, 0];
+  place.position.set(x, 0, z);
+  ground.position.y = 0;
+  place.updateMatrixWorld(true);
+  raise(ground, pose.floating ? h : -rig.skin({ step: 2 }));
+  place.updateMatrixWorld(true);
+  return () => {
+    rig.restore(snap);
+    place.position.copy(at);
+    ground.position.y = height;
+    place.updateMatrixWorld(true);
+  };
+}
+
 export function Mannequin({
   onReady,
   outline = true,
   outlineWidth = 2.25,
   outlineColor = "#0d0d0f",
   bodyColor = "#e7e5e2",
+  silhouette = false,
+  grayscale = false,
+  silhouetteColor = "#111114",
 }: {
   onReady?: () => void;
   outline?: boolean;
@@ -88,6 +122,11 @@ export function Mannequin({
   outlineWidth?: number;
   outlineColor?: string;
   bodyColor?: string;
+  /** The whole body as one flat shape in `silhouetteColor`. */
+  silhouette?: boolean;
+  /** The body in values only. */
+  grayscale?: boolean;
+  silhouetteColor?: string;
 }) {
   const { scene } = useGLTF(MODEL_URL);
   const place = useRef<Group>(null);
@@ -174,6 +213,7 @@ export function Mannequin({
   useEffect(() => setOutlineVisible(outline), [outline, setOutlineVisible]);
   useEffect(() => setOutlineWidth(outlineWidth), [outlineWidth, setOutlineWidth]);
   useEffect(() => setColors(bodyColor, outlineColor), [bodyColor, outlineColor, setColors]);
+  useEffect(() => rig?.setLook({ silhouette, grayscale, color: silhouetteColor }), [rig, silhouette, grayscale, silhouetteColor]);
 
   useEffect(() => {
     if (rig) poseStore.setFrames(rig.frames);
@@ -185,6 +225,22 @@ export function Mannequin({
       place.current && ground.current ? measurePose(place.current, ground.current, rig, pose) : null,
     );
     return () => poseStore.setMeasurer(null);
+  }, [rig]);
+
+  // Named hand targets and gaze from the AI, placed on this skeleton.
+  useEffect(() => {
+    if (!rig || !place.current) return;
+    const solver = createPoseSolver(rig, place.current);
+    poseStore.setSolver((pose, request) => solver.solve(pose, request));
+    return () => poseStore.setSolver(null);
+  }, [rig]);
+
+  // Camera-angle thumbnails picture the pose where it's going, even mid-glide.
+  useEffect(() => {
+    if (!rig) return;
+    return registerSnapshotStep(() =>
+      place.current && ground.current ? showFinalPose(place.current, ground.current, rig, poseStore.get().pose) : () => {},
+    );
   }, [rig]);
 
   useTint(rig);
@@ -277,7 +333,16 @@ function useTint(rig: Rig | null) {
     if (!rig) return;
     const apply = () => rig.setTint(poseStore.get());
     apply();
-    return poseStore.subscribe(apply);
+    const off = poseStore.subscribe(apply);
+    // Camera-angle thumbnails show the plain figure, not what's selected.
+    const offSnapshot = registerSnapshotStep(() => {
+      rig.setTint({ hovered: null, selected: null, dragging: false });
+      return apply;
+    });
+    return () => {
+      off();
+      offSnapshot();
+    };
   }, [rig]);
 }
 
@@ -366,7 +431,11 @@ function usePosingGestures(rig: Rig | null) {
     const { bone } = joint;
     const pivot0 = bone.getWorldPosition(new Vector3());
     const grabOffset = e.point.clone().sub(pivot0);
-    const facing = camera.getWorldDirection(new Vector3());
+    // The drag plane faces the viewer. Through the fish-eye lens, a part out
+    // at the side is seen along its own line of sight, not the lens's axis.
+    const facing = lensOn()
+      ? e.point.clone().sub(camera.getWorldPosition(new Vector3())).normalize()
+      : camera.getWorldDirection(new Vector3());
     tools.plane.setFromNormalAndCoplanarPoint(facing, e.point);
     const parentQ = bone.parent!.getWorldQuaternion(new Quaternion());
     const parentInv = parentQ.clone().invert();
@@ -374,9 +443,11 @@ function usePosingGestures(rig: Rig | null) {
     // Current world direction of the part, for twisting.
     const segment = joint.tip.getWorldPosition(new Vector3()).sub(pivot0).normalize();
     const rect = gl.domElement.getBoundingClientRect();
-    const pivotScreen = pivot0.clone().project(camera);
-    const toScreen = (x: number, y: number) =>
-      Math.atan2(y - (rect.top + (1 - pivotScreen.y) * 0.5 * rect.height), x - (rect.left + (pivotScreen.x + 1) * 0.5 * rect.width));
+    const [pivotX, pivotY] = projectToCanvas(pivot0, camera, rect.width, rect.height);
+    const pivotClientX = canvasToClientX(pivotX, rect);
+    // In mirror view, turning clockwise on screen is anticlockwise in the scene.
+    const mirror = viewFlip.get() ? -1 : 1;
+    const toScreen = (x: number, y: number) => mirror * Math.atan2(y - (rect.top + pivotY), x - pivotClientX);
     const startAngle = toScreen(e.nativeEvent.clientX, e.nativeEvent.clientY);
     const swing = new Quaternion();
     const next = new Quaternion();
@@ -389,8 +460,8 @@ function usePosingGestures(rig: Rig | null) {
         const away = segment.dot(facing) > 0 ? 1 : -1;
         swing.setFromAxisAngle(segment, angle * away);
       } else {
-        tools.ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
-        tools.raycaster.setFromCamera(tools.ndc, camera);
+        pointerNdc(ev.clientX, ev.clientY, rect, tools.ndc);
+        setPointerRay(tools.raycaster, tools.ndc, camera, rect.width / rect.height);
         if (!tools.raycaster.ray.intersectPlane(tools.plane, tools.hit)) return;
         const pivot = bone.getWorldPosition(new Vector3());
         swing.setFromUnitVectors(grabOffset.clone().normalize(), tools.hit.sub(pivot).normalize());
@@ -432,9 +503,9 @@ function PivotMarker({ rig }: { rig: Rig }) {
   if (!joint) return null;
   return (
     <group ref={anchor}>
-      <Html center zIndexRange={[4, 0]} style={{ pointerEvents: "none" }}>
+      <LensHtml center zIndexRange={[4, 0]} style={{ pointerEvents: "none" }}>
         <div className="pivot-marker" />
-      </Html>
+      </LensHtml>
     </group>
   );
 }

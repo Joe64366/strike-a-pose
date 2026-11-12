@@ -66,9 +66,9 @@ export function usePoseGeneration(
       // Build on the pose as it is now (it may have been hand-edited meanwhile).
       const { history: h, applyPose: apply } = latest.current;
       const now = h.entries.find((e) => e.id === id) ?? entry;
-      const pose = aiToPose(data.pose, poseStore.get().frames, refine ? now.pose : {}, (p) =>
-        poseStore.measureLowest(p),
-      );
+      const pose = aiToPose(data.pose, poseStore.get().frames, refine ? now.pose : {}, (p) => poseStore.measureLowest(p), {
+        solve: (p, request) => poseStore.solve(p, request),
+      });
       apply(id, pose);
       const retitle = !refine || now.title === UNTITLED;
       h.update(id, { status: "ready", ...(retitle && data.pose.title ? { title: data.pose.title } : {}) });

@@ -49,6 +49,11 @@ export function naturalize(ai: AiPose): AiPose {
   const isRest = (id: JointId) => get(id).every((v) => Math.abs(v) < 0.5);
   const rand = rng(hash(JSON.stringify(ai.pose) + ai.title));
   const jitter = (amp: number) => (rand() * 2 - 1) * amp;
+  // A named posture already set the legs and hips; a reached arm gets
+  // placed by the solver afterwards. Only adjust what the model wrote itself.
+  const ownLegs = !ai.posture || ai.posture === "custom";
+  const reached = (s: Side) => (s === "left" ? ai.left_reach : ai.right_reach) ?? "none";
+  const freeArm = (s: Side) => reached(s) === "none";
 
   // 0. Planted legs: models often bow or lean by rotating the whole body,
   //    which tips the legs over too. On the floor the legs should stay
@@ -62,7 +67,7 @@ export function naturalize(ai: AiPose): AiPose {
     // counter-swing again would double it.
     const compensated =
       Math.abs(hb) > 8 && SIDES.some((s) => Math.sign(get(`${s}Thigh`)[0]) === Math.sign(hb) && Math.abs(get(`${s}Thigh`)[0]) >= 0.6 * Math.abs(hb));
-    if (ai.stick_to_floor && legsStraightish && !compensated && Math.abs(hb) < 75 && Math.abs(ht) < 40) {
+    if (ownLegs && ai.stick_to_floor && legsStraightish && !compensated && Math.abs(hb) < 75 && Math.abs(ht) < 40) {
       for (const s of SIDES) {
         const t = get(`${s}Thigh`);
         // A leg deliberately swung against the lean (the free leg of an
@@ -81,6 +86,7 @@ export function naturalize(ai: AiPose): AiPose {
   // 0b. Tuck flared elbows: hands brought in front of the body with the
   //     upper arms still near the T-pose's horizontal reads as a mannequin.
   for (const s of SIDES) {
+    if (!freeArm(s)) continue;
     const [swing, raise, twist] = get(`${s}UpperArm`);
     const elbow = get(`${s}Forearm`)[0];
     if (elbow > 75 && raise > -40 && raise < 25 && swing < 70) {
@@ -90,6 +96,7 @@ export function naturalize(ai: AiPose): AiPose {
 
   const hips = get("hips");
   const standing =
+    ownLegs &&
     ai.stick_to_floor &&
     Math.abs(hips[0]) < 15 &&
     Math.abs(hips[1]) < 15 &&
@@ -103,7 +110,7 @@ export function naturalize(ai: AiPose): AiPose {
   //    model aimed it, only the shoulder line changes.
   for (const s of SIDES) {
     const shoulder: JointId = `${s}Shoulder`;
-    if (!isRest(shoulder)) continue;
+    if (!isRest(shoulder) || !freeArm(s)) continue;
     const [swing, raise, twist] = get(`${s}UpperArm`);
     const elevation = raise + 90; // 0 = hanging, 90 = T-pose, 175 = overhead
     const shrug = clamp((elevation - 70) * 0.18, 0, 18);
@@ -171,7 +178,7 @@ export function naturalize(ai: AiPose): AiPose {
   // 5. Natural asymmetry: perfectly mirrored arms read as a mannequin.
   const lU = get("leftUpperArm");
   const rU = get("rightUpperArm");
-  if (lU.every((v, k) => Math.abs(v - rU[k]) < 2)) {
+  if (freeArm("left") && freeArm("right") && lU.every((v, k) => Math.abs(v - rU[k]) < 2)) {
     set("leftUpperArm", [lU[0] + jitter(5), lU[1] + jitter(4), lU[2]]);
     set("rightUpperArm", [rU[0] + jitter(5), rU[1] + jitter(4), rU[2]]);
     const lF = get("leftForearm");
@@ -186,6 +193,7 @@ export function naturalize(ai: AiPose): AiPose {
 
   // 7. Kneeling: the tops of the feet lie on the floor instead of digging in.
   for (const s of SIDES) {
+    if (!ownLegs) break;
     const kneeling = get(`${s}Shin`)[0] > 70 && Math.abs(get(`${s}Thigh`)[0]) < 45;
     const foot = get(`${s}Foot`);
     if (ai.stick_to_floor && kneeling && foot[0] < 20) set(`${s}Foot`, [40, foot[1], foot[2]]);

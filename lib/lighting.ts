@@ -42,9 +42,17 @@ export interface Lighting {
   /** Light bouncing around the room: 0 = black shadows, 1 = very soft. */
   ambient: number;
   shading: Shading;
+  /** The body as one flat shape, in the colour that stands out most against the stage. */
+  silhouette: boolean;
+  /** The body (and its outline) in shades of grey: values only, no colour. */
+  grayscale: boolean;
   /** The preset this matches, or null once edited. */
   preset: PresetId | null;
 }
+
+/** Ways of looking at the light rather than the light itself: presets and resets keep them. */
+export type LightingView = Pick<Lighting, "shading" | "silhouette" | "grayscale">;
+const viewOf = (l: Lighting): LightingView => ({ shading: l.shading, silhouette: l.silhouette, grayscale: l.grayscale });
 
 export const MIN_ELEVATION = -80;
 export const MAX_ELEVATION = 89;
@@ -192,12 +200,15 @@ export const PRESETS = {
 export type PresetId = keyof typeof PRESETS;
 export const PRESET_IDS = Object.keys(PRESETS) as PresetId[];
 
-export function fromPreset(id: PresetId, shading: Shading = "smooth"): Lighting {
+export function fromPreset(
+  id: PresetId,
+  view: LightingView = { shading: "smooth", silhouette: false, grayscale: false },
+): Lighting {
   const p = PRESETS[id];
   return {
     lights: { key: { ...p.lights.key }, fill: { ...p.lights.fill }, rim: { ...p.lights.rim } },
     ambient: p.ambient,
-    shading,
+    ...view,
     preset: id,
   };
 }
@@ -279,6 +290,8 @@ export function sanitizeLighting(raw: unknown): Lighting {
     },
     ambient: num(saved.ambient, 0, 1, DEFAULT_LIGHTING.ambient),
     shading: saved.shading === "two" || saved.shading === "three" ? saved.shading : "smooth",
+    silhouette: saved.silhouette === true,
+    grayscale: saved.grayscale === true,
     preset: saved.preset && saved.preset in PRESETS ? saved.preset : null,
   };
 }
@@ -309,13 +322,14 @@ export const lightingStore = {
     if (patch.elevation !== undefined) next.elevation = clampElevation(next.elevation);
     commit({ ...cur, lights: { ...cur.lights, [id]: next }, preset: null });
   },
-  set(patch: Partial<Pick<Lighting, "ambient" | "shading">>) {
+  set(patch: Partial<Pick<Lighting, "ambient" | "shading" | "silhouette" | "grayscale">>) {
     const cur = lightingStore.get();
-    // Shading is a way of looking at the light, not part of it: a preset survives it.
+    // Shading, silhouette and grayscale are ways of looking at the light, not
+    // part of it: a preset survives them.
     commit({ ...cur, ...patch, preset: patch.ambient !== undefined ? null : cur.preset });
   },
   applyPreset(id: PresetId) {
-    commit(fromPreset(id, lightingStore.get().shading));
+    commit(fromPreset(id, viewOf(lightingStore.get())));
   },
   /** Swap left and right: the same setup lighting the other side. */
   mirror() {
@@ -328,7 +342,7 @@ export const lightingStore = {
     });
   },
   reset() {
-    commit(fromPreset("studio", lightingStore.get().shading));
+    commit(fromPreset("studio", viewOf(lightingStore.get())));
   },
 };
 
@@ -476,6 +490,10 @@ export function paintBall(img: ImageData, lighting: Lighting, view: ViewQuat, bo
         cr = albedo[0] * level * (0.5 + 0.5 * tint[0]);
         cg = albedo[1] * level * (0.5 + 0.5 * tint[1]);
         cb = albedo[2] * level * (0.5 + 0.5 * tint[2]);
+      }
+      if (lighting.grayscale) {
+        // Same weights as the figure's grayscale: values only.
+        cr = cg = cb = 0.2126 * cr + 0.7152 * cg + 0.0722 * cb;
       }
       // Soft shoulder so bright lights don't clip to flat white.
       const tm = (c: number) => Math.round(255 * Math.pow(c / (1 + c * 0.35), 1 / 1.6));

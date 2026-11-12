@@ -1,8 +1,7 @@
 "use client";
 
 import { useFrame, useThree } from "@react-three/fiber";
-import type CameraControlsImpl from "camera-controls";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo } from "react";
 import {
   BufferGeometry,
   CubeCamera,
@@ -21,15 +20,14 @@ import {
   Vector3,
   WebGLCubeRenderTarget,
   type PerspectiveCamera,
+  type WebGLRenderer,
 } from "three";
-import type { CameraView } from "@/lib/cameraViews";
-import { AXIS_COLORS, fisheyeViews, perspective, usePerspective, usePerspectiveUi, type PerspectiveSettings } from "@/lib/perspective";
-import { poseStore } from "@/lib/poseStore";
+import { AXIS_COLORS, usePerspective, usePerspectiveUi, type PerspectiveSettings } from "@/lib/perspective";
+import { usePoseStore } from "@/lib/poseStore";
+import { NO_SNAPSHOT } from "./snapshotPrep";
 
 /** Chest height of the 1.8 m figure. */
 const CENTER_Y = 0.95;
-/** Half the height the frame should hold (figure half-height plus margin). */
-const FRAME_HALF = 1.2;
 /** Guide lines run this far each way (inside the camera's far plane). */
 const GUIDE_LENGTH = 60;
 /** Pieces per half-line (see `fan`). */
@@ -38,77 +36,22 @@ const HORIZON_RADIUS = 85;
 
 const deg = (d: number) => (d * Math.PI) / 180;
 
-function figurePoint(): Vector3 {
-  const { pose, floorGap } = poseStore.get();
-  const [x, , z] = pose.root ?? [0, 0, 0];
-  return new Vector3(x, CENTER_Y + floorGap, z);
-}
-
 /* ------------------------------------------------------------- the rig */
 
-/** The fish-eye lens mode: framing, guides and the lens itself. */
+/**
+ * The fish-eye lens mode: the lens itself and its guides. It never touches
+ * the camera: turning the lens on or off shows the same view, just seen
+ * through a different lens (curvature is the lens's angle of view).
+ */
 export function PerspectiveRig() {
   const p = usePerspective();
   const on = usePerspectiveUi((s) => s.on);
-  const aim = usePerspectiveUi((s) => s.aim);
-  const controls = useThree((s) => s.controls) as unknown as CameraControlsImpl | null;
-  const wasOn = useRef(false);
-
-  // Frame the camera when the lens turns on or its settings change.
-  useEffect(() => {
-    if (controls) applyMode(controls, on, perspective.get(), wasOn);
-  }, [on, aim, controls]);
-
   return (
     <>
       {on && p.guides && <Guides settings={p} />}
       {on && <FisheyeLens halfAngle={deg(p.curvature)} />}
     </>
   );
-}
-
-/**
- * On: carry on from the fish-eye angle you last left (or, the first time,
- * close in from your eye level so the curvature shows on the figure),
- * keeping the direction you were looking from. Off: remember the fish-eye
- * angle, then go back to the view you had before. A saved camera angle can
- * ask to be landed on instead (fisheyeViews.setPending). Each pose keeps its
- * own lens, so opening another pose can switch it on or off too.
- */
-function applyMode(cc: CameraControlsImpl, on: boolean, p: PerspectiveSettings, wasOn: React.RefObject<boolean>) {
-  const requested = fisheyeViews.takePending();
-  // Opening another pose: the pose being left already kept this angle.
-  const switchedPose = fisheyeViews.takeSwitch();
-  const go = (v: CameraView) => void cc.setLookAt(...v.position, ...v.target, true);
-  if (!on) {
-    if (wasOn.current) {
-      if (!switchedPose) fisheyeViews.remember(currentView(cc));
-      if (requested) go(requested);
-      else void cc.reset(true);
-    }
-    wasOn.current = false;
-    return;
-  }
-  const turningOn = !wasOn.current;
-  if (turningOn) cc.saveState();
-  wasOn.current = true;
-  const resume = requested ?? (turningOn ? fisheyeViews.last() : null);
-  if (resume) return go(resume);
-
-  // Curvature or eye level changed: re-frame, keeping your direction.
-  const f = figurePoint();
-  const az = cc.azimuthAngle;
-  const reach = (FRAME_HALF * 0.85) / Math.tan(deg(p.curvature) * 0.62);
-  const dy = p.eye - f.y;
-  const dh = Math.sqrt(Math.max(reach * reach - dy * dy, 0.6 * 0.6));
-  void cc.setLookAt(f.x + Math.sin(az) * dh, p.eye, f.z + Math.cos(az) * dh, f.x, f.y, f.z, true);
-}
-
-function currentView(cc: CameraControlsImpl): CameraView {
-  return {
-    position: cc.getPosition(new Vector3()).toArray() as CameraView["position"],
-    target: cc.getTarget(new Vector3()).toArray() as CameraView["target"],
-  };
 }
 
 /* -------------------------------------------------------------- guides */
@@ -154,11 +97,14 @@ const AXES: Record<"x" | "y" | "z", Vector3> = {
  * of curvilinear perspective, like any other straight line in the scene.
  */
 function Guides({ settings }: { settings: PerspectiveSettings }) {
-  const aim = usePerspectiveUi((s) => s.aim);
   const camera = useThree((s) => s.camera);
+  // Centred on the figure, wherever it's moved to.
+  const x = usePoseStore((s) => s.pose.root?.[0] ?? 0);
+  const z = usePoseStore((s) => s.pose.root?.[2] ?? 0);
+  const lift = usePoseStore((s) => s.floorGap);
 
   const { strong, horizon } = useMemo(() => {
-    const c = figurePoint();
+    const c = new Vector3(x, CENTER_Y + lift, z);
     const count = settings.dense ? 28 : 16;
     const build = (axes: ("x" | "y" | "z")[], n: number) => {
       const out = { pos: [] as number[], col: [] as number[] };
@@ -181,8 +127,7 @@ function Guides({ settings }: { settings: PerspectiveSettings }) {
       strong: new LineSegments(build(["x", "z", "y"], count), mat(0.78)),
       horizon: new LineLoop(hg, mat(0.95, AXIS_COLORS.horizon)),
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.dense, aim]);
+  }, [settings.dense, x, z, lift]);
 
   useEffect(
     () => () => {
@@ -197,10 +142,11 @@ function Guides({ settings }: { settings: PerspectiveSettings }) {
   // The horizon is at the camera's own height, wherever it moves.
   useFrame(() => followHeight(horizon, camera.position.y));
 
+  // Guides are a drawing aid, left out of camera-angle thumbnails.
   return (
     <>
-      <primitive object={strong} renderOrder={5} />
-      <primitive object={horizon} renderOrder={5} />
+      <primitive object={strong} renderOrder={5} userData={NO_SNAPSHOT} />
+      <primitive object={horizon} renderOrder={5} userData={NO_SNAPSHOT} />
     </>
   );
 }
@@ -237,16 +183,68 @@ const FISHEYE_FRAGMENT = /* glsl */ `
   }
 `;
 
-function setLensUniforms(material: ShaderMaterial, camera: PerspectiveCamera, scene: Scene, size: Vector2, halfAngle: number) {
-  const u = material.uniforms;
+export interface FisheyePass {
+  cube: WebGLCubeRenderTarget;
+  cubeCamera: CubeCamera;
+  quadScene: Scene;
+  quadCamera: OrthographicCamera;
+  material: ShaderMaterial;
+}
+
+/** The lens's resources: a cube capture and the full-frame re-projection. */
+export function createFisheyePass(cubeSize: number): FisheyePass {
+  const cube = new WebGLCubeRenderTarget(cubeSize, { type: HalfFloatType, generateMipmaps: false });
+  const cubeCamera = new CubeCamera(0.05, 100, cube);
+  const material = new ShaderMaterial({
+    uniforms: {
+      tCube: { value: cube.texture },
+      rot: { value: new Matrix3() },
+      halfAngle: { value: 1 },
+      aspect: { value: 1 },
+      center: { value: new Vector2(0.5, 0.5) },
+      background: { value: new Vector3() },
+    },
+    vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4( position.xy, 0.0, 1.0 ); }",
+    fragmentShader: FISHEYE_FRAGMENT,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const quadScene = new Scene();
+  quadScene.add(new Mesh(new PlaneGeometry(2, 2), material));
+  return { cube, cubeCamera, quadScene, quadCamera: new OrthographicCamera(-1, 1, 1, -1, 0, 1), material };
+}
+
+export function disposeFisheyePass(pass: FisheyePass) {
+  pass.cube.dispose();
+  pass.material.dispose();
+}
+
+/**
+ * Draw `scene` through the lens, as seen from `camera`, into the current
+ * viewport. `aspect` is the frame's width / height; `centerX` the optical
+ * centre across it (0–1).
+ */
+export function renderFisheye(
+  pass: FisheyePass,
+  gl: WebGLRenderer,
+  scene: Scene,
+  camera: PerspectiveCamera,
+  { halfAngle, aspect, centerX }: { halfAngle: number; aspect: number; centerX: number },
+) {
+  camera.updateMatrixWorld();
+  pass.cubeCamera.position.copy(camera.position);
+  pass.cubeCamera.update(gl, scene);
+
+  const u = pass.material.uniforms;
   u.rot.value.setFromMatrix4(camera.matrixWorld);
   u.halfAngle.value = halfAngle;
-  u.aspect.value = size.x / Math.max(size.y, 1);
-  // Optical centre follows the visible stage (it shifts right of the sidebar).
-  const view = camera.view;
-  u.center.value.set(view ? 0.5 - view.offsetX / view.fullWidth : 0.5, 0.5);
+  u.aspect.value = aspect;
+  u.center.value.set(centerX, 0.5);
   const bg = scene.background as { r: number; g: number; b: number } | null;
   if (bg && "r" in bg) u.background.value.set(bg.r, bg.g, bg.b);
+
+  gl.setRenderTarget(null);
+  gl.render(pass.quadScene, pass.quadCamera);
 }
 
 /**
@@ -260,46 +258,19 @@ function FisheyeLens({ halfAngle }: { halfAngle: number }) {
   const scene = useThree((s) => s.scene);
   const camera = useThree((s) => s.camera) as PerspectiveCamera;
 
-  const { cube, cubeCamera, quadScene, quadCamera, material } = useMemo(() => {
-    const cube = new WebGLCubeRenderTarget(1024, { type: HalfFloatType, generateMipmaps: false });
-    const cubeCamera = new CubeCamera(0.05, 100, cube);
-    const material = new ShaderMaterial({
-      uniforms: {
-        tCube: { value: cube.texture },
-        rot: { value: new Matrix3() },
-        halfAngle: { value: 1 },
-        aspect: { value: 1 },
-        center: { value: new Vector2(0.5, 0.5) },
-        background: { value: new Vector3() },
-      },
-      vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4( position.xy, 0.0, 1.0 ); }",
-      fragmentShader: FISHEYE_FRAGMENT,
-      depthTest: false,
-      depthWrite: false,
-    });
-    const quadScene = new Scene();
-    quadScene.add(new Mesh(new PlaneGeometry(2, 2), material));
-    return { cube, cubeCamera, quadScene, quadCamera: new OrthographicCamera(-1, 1, 1, -1, 0, 1), material };
-  }, []);
-
-  useEffect(
-    () => () => {
-      cube.dispose();
-      material.dispose();
-    },
-    [cube, material],
-  );
+  const pass = useMemo(() => createFisheyePass(1024), []);
+  useEffect(() => () => disposeFisheyePass(pass), [pass]);
 
   // Priority 1: we render the frame ourselves (the default render pauses).
   useFrame(() => {
-    camera.updateMatrixWorld();
-    cubeCamera.position.copy(camera.position);
-    cubeCamera.update(gl, scene);
-
-    setLensUniforms(material, camera, scene, gl.getDrawingBufferSize(new Vector2()), halfAngle);
-
-    gl.setRenderTarget(null);
-    gl.render(quadScene, quadCamera);
+    const size = gl.getDrawingBufferSize(new Vector2());
+    // Optical centre follows the visible stage (it shifts right of the sidebar).
+    const view = camera.view;
+    renderFisheye(pass, gl, scene, camera, {
+      halfAngle,
+      aspect: size.x / Math.max(size.y, 1),
+      centerX: view ? 0.5 - view.offsetX / view.fullWidth : 0.5,
+    });
   }, 1);
 
   return null;

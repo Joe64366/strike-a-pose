@@ -24,21 +24,30 @@ export const BODY_COLORS = [
 export type BodyColorId = (typeof BODY_COLORS)[number]["id"];
 
 /**
- * Contour colours, after the pencils artists actually draw with: ink,
- * graphite, sepia, non-photo blue, animator's red, and white for dark bodies.
+ * Contour colours, after the pencils and inks artists actually draw with:
+ * ink, graphite, sepia, Prussian blue ink, non-photo blue, the animator's
+ * red and green construction pencils, and white for dark bodies.
  */
 export const OUTLINE_COLORS = [
   { id: "ink", name: "Ink", hex: "#0d0d0f" },
   { id: "graphite", name: "Graphite", hex: "#4a4a50" },
   { id: "sepia", name: "Sepia", hex: "#5a3d2b" },
+  { id: "prussian", name: "Prussian blue", hex: "#1f3d63" },
   { id: "blue", name: "Non-photo blue", hex: "#5b9bd5" },
   { id: "red", name: "Red pencil", hex: "#d0453a" },
+  { id: "green", name: "Green pencil", hex: "#3c8a55" },
   { id: "white", name: "White", hex: "#ffffff" },
 ] as const;
 export type OutlineColorId = (typeof OUTLINE_COLORS)[number]["id"];
 
-export const bodyHex = (id: BodyColorId) => (BODY_COLORS.find((c) => c.id === id) ?? BODY_COLORS[0]).hex;
-export const outlineHex = (id: OutlineColorId) => (OUTLINE_COLORS.find((c) => c.id === id) ?? OUTLINE_COLORS[0]).hex;
+/** A colour picked freely (Custom), instead of one of the named ones. */
+export type HexColor = `#${string}`;
+export const isHex = (v: unknown): v is HexColor => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+
+export const bodyHex = (id: BodyColorId | HexColor) =>
+  isHex(id) ? id : (BODY_COLORS.find((c) => c.id === id) ?? BODY_COLORS[0]).hex;
+export const outlineHex = (id: OutlineColorId | HexColor) =>
+  isHex(id) ? id : (OUTLINE_COLORS.find((c) => c.id === id) ?? OUTLINE_COLORS[0]).hex;
 
 /**
  * Stage backgrounds. Soft, low-saturation tones (like Apple's wallpaper and
@@ -62,13 +71,18 @@ export const OUTLINE_PX: Record<OutlineWeight, number> = { off: 0, thin: 1.5, re
 
 export interface Settings {
   appearance: Appearance;
-  background: BackgroundId;
+  /** A named background, or a custom colour. */
+  background: BackgroundId | HexColor;
   grid: boolean;
-  bodyColor: BodyColorId;
+  bodyColor: BodyColorId | HexColor;
   outlineWeight: OutlineWeight;
-  outlineColor: OutlineColorId;
+  outlineColor: OutlineColorId | HexColor;
   /** The suggestion chips above the prompt box. */
   promptIdeas: boolean;
+  /** The tool buttons at the top right and the hide-interface button (their shortcuts always work). */
+  showToolbar: boolean;
+  /** The prompt bar at the bottom (when off, / brings it up). */
+  showPromptBar: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -79,17 +93,20 @@ export const DEFAULT_SETTINGS: Settings = {
   outlineWeight: "regular",
   outlineColor: "ink",
   promptIdeas: true,
+  showToolbar: true,
+  showPromptBar: true,
 };
 
 export const SETTINGS_KEY = "strike-a-pose:settings:v1";
 
-export function stageColor(id: BackgroundId, scheme: Scheme): string {
+export function stageColor(id: BackgroundId | HexColor, scheme: Scheme): string {
+  if (isHex(id)) return id;
   const bg = BACKGROUNDS.find((b) => b.id === id) ?? BACKGROUNDS[0];
   return scheme === "dark" && "dark" in bg ? bg.dark : bg.light;
 }
 
-/** Floor grid and lighting tones derived from the background. */
-export function stagePalette(id: BackgroundId, scheme: Scheme) {
+/** Floor grid and lighting tones derived from the background (any colour, custom included). */
+export function stagePalette(id: BackgroundId | HexColor, scheme: Scheme) {
   const bg = stageColor(id, scheme);
   const dark = luminance(bg) < 0.25;
   const toward = dark ? "#ffffff" : "#000000";
@@ -127,6 +144,22 @@ function luminance(hex: string): number {
 }
 
 /**
+ * The silhouette's colour: the opposite of the stage, as far as it goes:
+ * near-black on a light stage, near-white on a dark one. (Inverting the
+ * colour would turn a mid-grey stage into a mid-grey figure.)
+ */
+export function silhouetteHex(stage: string): string {
+  return luminance(stage) > 0.18 ? "#111114" : "#f4f4f6";
+}
+
+/** The same colour as a grey of equal lightness. */
+export function grayHex(hex: string): string {
+  const y = Math.round(0.2126 * rgb(hex)[0] + 0.7152 * rgb(hex)[1] + 0.0722 * rgb(hex)[2]);
+  const c = y.toString(16).padStart(2, "0");
+  return `#${c}${c}${c}`;
+}
+
+/**
  * Runs before first paint (inlined in <head>): sets the scheme and stage
  * colour from saved settings so there's no flash of the wrong theme.
  */
@@ -139,7 +172,8 @@ var s=JSON.parse(localStorage.getItem(${JSON.stringify(SETTINGS_KEY)})||"{}");
 var a=s.appearance||"system";
 var d=a==="dark"||(a==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);
 var r=document.documentElement;r.dataset.scheme=d?"dark":"light";
-var st=${JSON.stringify(stages)}[s.background||"studio"]||${JSON.stringify(stages.studio)};
+var b=s.background||"studio";
+var st=/^#[0-9a-f]{6}$/i.test(b)?[b,b]:${JSON.stringify(stages)}[b]||${JSON.stringify(stages.studio)};
 r.style.setProperty("--stage",st[d?1:0]);
 }catch(e){}})();`;
 }

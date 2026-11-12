@@ -1,12 +1,15 @@
 "use client";
 
-import { Html, Line } from "@react-three/drei";
+import { Line } from "@react-three/drei";
 import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import type CameraControlsImpl from "camera-controls";
 import { useMemo, useRef, useState } from "react";
 import { Color, DoubleSide, Group, Plane, Raycaster, Shape, ShapeGeometry, Vector2, Vector3 } from "three";
 import { MAX_LIFT, MAX_TRAVEL, type RootPosition } from "@/lib/poseMath";
 import { poseStore, usePoseStore } from "@/lib/poseStore";
+import { LensHtml } from "./LensHtml";
+import { pointerNdc, setPointerRay } from "./lens";
+import { NO_SNAPSHOT } from "./snapshotPrep";
 import type { Rig } from "./rig";
 
 const ACCENT = new Color("#0a84ff");
@@ -82,8 +85,8 @@ export function BodyMover({ rig }: { rig: Rig }) {
     const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
     const move = (ev: PointerEvent) => {
-      ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
-      raycaster.setFromCamera(ndc, camera);
+      pointerNdc(ev.clientX, ev.clientY, rect, ndc);
+      setPointerRay(raycaster, ndc, camera, rect.width / rect.height);
       const next: "move" | "lift" = ev.shiftKey ? "lift" : "move";
       if (next !== mode) {
         // Switching mid-drag: continue from wherever the figure is now.
@@ -133,7 +136,7 @@ export function BodyMover({ rig }: { rig: Rig }) {
 
   return (
     <>
-      <group ref={ring}>
+      <group ref={ring} userData={NO_SNAPSHOT}>
         <group rotation-x={-Math.PI / 2}>
           {/* Generous invisible-ish disc: the whole footprint is grabbable. */}
           <mesh
@@ -167,11 +170,11 @@ export function BodyMover({ rig }: { rig: Rig }) {
       </group>
 
       {lift > 0.005 && (
-        <group ref={plumb}>
+        <group ref={plumb} userData={NO_SNAPSHOT}>
           <Line points={[[0, 0, 0], [0, lift, 0]]} color="#0a84ff" lineWidth={1.5} dashed dashSize={0.04} gapSize={0.03} />
-          <Html position={[0, lift / 2, 0]} center zIndexRange={[4, 0]} style={{ pointerEvents: "none" }}>
+          <LensHtml position={[0, lift / 2, 0]} center zIndexRange={[4, 0]} style={{ pointerEvents: "none" }}>
             <div className="lift-badge">{Math.round(lift * 100)} cm</div>
-          </Html>
+          </LensHtml>
         </group>
       )}
     </>

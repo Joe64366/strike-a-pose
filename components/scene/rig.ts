@@ -51,6 +51,8 @@ export interface Rig {
    */
   toon: { levels: { value: number }; cuts: { value: Vector3 }; ambient: { value: number } };
   setToon: (levels: 0 | 2 | 3, cuts: [number, number, number], ambient: number) => void;
+  /** Silhouette (one flat colour) or grayscale display of the body. */
+  setLook: (look: { silhouette: boolean; grayscale: boolean; color: string }) => void;
   /** CPU skinning. Returns the lowest world Y; optionally refreshes the pick mesh. */
   skin: (opts: { step?: number; updatePick?: boolean }) => number;
   /** Ease bones toward `pose` (or snap if `instant`). Returns true while still moving. */
@@ -139,12 +141,16 @@ export function buildRig(model: Object3D, material: MeshStandardMaterial): Rig |
   const tint = { value: new Float32Array(TINT_SLOTS) };
   const tintColor = { value: new Color("#0a84ff") };
   const toon: Rig["toon"] = { levels: { value: 0 }, cuts: { value: new Vector3(0.3, 0.1, 0.5) }, ambient: { value: 0.45 } };
+  const look = { silhouette: { value: 0 }, color: { value: new Color("#111114") }, gray: { value: 0 } };
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTint = tint;
     shader.uniforms.uTintColor = tintColor;
     shader.uniforms.uToon = toon.levels;
     shader.uniforms.uToonCuts = toon.cuts;
     shader.uniforms.uToonAmbient = toon.ambient;
+    shader.uniforms.uSilhouette = look.silhouette;
+    shader.uniforms.uSilColor = look.color;
+    shader.uniforms.uGray = look.gray;
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
@@ -166,7 +172,10 @@ export function buildRig(model: Object3D, material: MeshStandardMaterial): Rig |
          varying float vTint;
          uniform float uToon;
          uniform vec3 uToonCuts;
-         uniform float uToonAmbient;`,
+         uniform float uToonAmbient;
+         uniform float uSilhouette;
+         uniform vec3 uSilColor;
+         uniform float uGray;`,
       )
       .replace(
         "#include <color_fragment>",
@@ -185,6 +194,14 @@ export function buildRig(model: Object3D, material: MeshStandardMaterial): Rig |
            // Keep the light's colour, flatten its value.
            vec3 hue = outgoingLight / max(max(outgoingLight.r, max(outgoingLight.g, outgoingLight.b)), 1e-4);
            outgoingLight = diffuseColor.rgb * level * mix(vec3(1.0), hue, 0.5);
+         }
+         // Ways of seeing the body: one flat shape, or values without colour.
+         // A faint tint still shows what's hovered or selected while posing.
+         if (uSilhouette > 0.5) {
+           outgoingLight = mix(uSilColor, uTintColor * (0.35 + dot(uSilColor, vec3(0.3))), vTint * 0.8);
+         } else if (uGray > 0.5) {
+           float value = dot(outgoingLight, vec3(0.2126, 0.7152, 0.0722));
+           outgoingLight = mix(vec3(value), uTintColor * (0.4 + value), vTint);
          }
          #include <opaque_fragment>`,
       );
@@ -291,7 +308,17 @@ export function buildRig(model: Object3D, material: MeshStandardMaterial): Rig |
     toon.ambient.value = ambient;
   };
 
-  return { joints, byId, frames, mesh: skinned, pick, vertexJoint, tint, toon, setToon, skin, drive, setTint, applyRaw, snapshot, restore };
+  const setLook: Rig["setLook"] = ({ silhouette, grayscale, color }) => {
+    look.silhouette.value = silhouette ? 1 : 0;
+    look.gray.value = grayscale ? 1 : 0;
+    // Filmic tone mapping dims bright values, so a light silhouette is pushed
+    // past white to come out as white rather than grey.
+    look.color.value.set(color);
+    const bright = look.color.value.r + look.color.value.g + look.color.value.b > 1.5;
+    if (bright) look.color.value.multiplyScalar(5);
+  };
+
+  return { joints, byId, frames, mesh: skinned, pick, vertexJoint, tint, toon, setToon, setLook, skin, drive, setTint, applyRaw, snapshot, restore };
 }
 
 /**

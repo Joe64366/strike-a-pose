@@ -24,7 +24,10 @@ export function installDevHooks() {
     },
     /** Show a pose in the model's JSON format (for tuning the prompt's reference values). */
     applyAi(ai: AiPose, natural = true) {
-      const pose = aiToPose(ai, poseStore.get().frames, {}, (p) => poseStore.measureLowest(p), { natural });
+      const pose = aiToPose(ai, poseStore.get().frames, {}, (p) => poseStore.measureLowest(p), {
+        natural,
+        solve: (p, request) => poseStore.solve(p, request),
+      });
       poseStore.replace(pose);
     },
   };

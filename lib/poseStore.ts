@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import type { SolveRequest } from "./ai/targets";
 import type { JointId } from "./joints";
 import { isIdentity, type PoseData, type Quat, type RigFrames, type RootPosition } from "./poseMath";
 
@@ -54,6 +55,8 @@ const round3 = (v: number) => Math.round(v * 1000) / 1000;
 
 /** Supplied by the scene: lowest point of a pose at height 0, measured off-screen. */
 let measurer: ((pose: PoseData) => number | null) | null = null;
+/** Supplied by the scene: places hands and gaze on the real skeleton (see poseSolver). */
+let solver: ((pose: PoseData, request: SolveRequest) => PoseData) | null = null;
 
 function set(patch: Partial<PoseState>) {
   state = { ...state, ...patch };
@@ -136,6 +139,13 @@ export const poseStore = {
   /** Lowest point of `pose` (not the shown one) at height 0, or null if the scene isn't ready. */
   measureLowest(pose: PoseData): number | null {
     return measurer ? measurer(pose) : null;
+  },
+  setSolver(fn: typeof solver) {
+    solver = fn;
+  },
+  /** `pose` with named hand targets and gaze placed, or as-is if the scene isn't ready. */
+  solve(pose: PoseData, request: SolveRequest): PoseData {
+    return solver ? solver(pose, request) : pose;
   },
   /** Called by the scene with fresh measurements. */
   reportFooting(lowestAtZero: number, height: number, settled: boolean) {

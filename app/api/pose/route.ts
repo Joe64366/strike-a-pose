@@ -1,3 +1,4 @@
+import { expectedPostures } from "@/lib/ai/check";
 import { findReferences, formatReference, type LibraryPose } from "@/lib/ai/library";
 import poseLibrary from "@/lib/ai/poseLibrary.json";
 import { generatePose, ProviderError } from "@/lib/ai/providers";
@@ -59,14 +60,31 @@ export async function POST(request: Request) {
   const variation = current ? "" : pickVariation();
 
   try {
-    const { pose, provider } = await generatePose(
-      userPrompt(prompt, current, previous, references.map(formatReference), variation),
-    );
+    const user = userPrompt(prompt, current, previous, references.map(formatReference), variation);
+    let { pose, provider } = await generatePose(user);
+
+    // Some words leave no doubt how the body is supported ("kneeling",
+    // "lying", "cross-legged"). If the answer contradicts them, ask once
+    // more, saying what was wrong.
+    const expected = expectedPostures(prompt);
+    let retried = false;
+    if (expected && !expected.includes(pose.posture)) {
+      retried = true;
+      try {
+        const again = await generatePose(
+          `${user}\nCHECK: posture "${pose.posture}" doesn't fit this request. Choose one of: ${expected.join(", ")}.`,
+        );
+        if (expected.includes(again.pose.posture)) ({ pose, provider } = again);
+      } catch {
+        // Keep the first answer.
+      }
+    }
     return Response.json({
       pose,
       provider,
       ms: Math.round(performance.now() - started),
       references: references.map((r) => r.id),
+      retried,
     });
   } catch (e) {
     const status = e instanceof ProviderError ? e.status : 500;

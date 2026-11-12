@@ -1,6 +1,6 @@
 "use client";
 
-import { Axis3d, Camera, Sun, Timer } from "lucide-react";
+import { Axis3d, Camera, FlipHorizontal2, Sun, Timer } from "lucide-react";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -13,11 +13,14 @@ import { usePoseHistory } from "@/lib/usePoseHistory";
 import { settingsStore, stageColor, useScheme, useSettings, type OutlineWeight } from "@/lib/settings";
 import { installDevHooks } from "@/lib/devHooks";
 import { lightingUi, useLightingUi } from "@/lib/lighting";
-import { fisheyeViews, perspective, usePerspectiveUi } from "@/lib/perspective";
-import { cameraBridge, MAX_VIEWS, type SavedView } from "@/lib/cameraViews";
+import { perspective, usePerspectiveUi } from "@/lib/perspective";
+import { cameraBridge, MAX_VIEWS, viewSnapshots, type SavedView } from "@/lib/cameraViews";
 import { session, timerSettings, useSession, type SessionPose } from "@/lib/drawingTimer";
 import { isRestPose } from "@/lib/poseMath";
 import { VIEW_ORDER, type ViewPreset, type ViewRequest } from "@/lib/views";
+import { viewFlip, useViewFlip } from "@/lib/viewFlip";
+import { hasUnseenChanges } from "@/lib/changelog";
+import type { PopoverAnchor } from "@/components/ui/AnchoredPopover";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { TooltipLayer } from "@/components/ui/TooltipLayer";
 import { Composer, type ComposerHandle } from "./Composer";
@@ -40,13 +43,15 @@ import { REST_POSE, usePoseEditing } from "./usePoseEditing";
 import { usePoseGeneration } from "./usePoseGeneration";
 import { usePoseLook } from "./usePoseLook";
 import { SettingsPanel, type SettingsAnchor } from "./SettingsPanel";
+import { InfoPanel } from "./InfoPanel";
+import { ChangelogPanel } from "./ChangelogPanel";
 import { ViewSwitcher } from "./ViewSwitcher";
 
 // WebGL is browser-only; skip prerendering the canvas.
 const Scene = dynamic(() => import("@/components/scene/Scene"), { ssr: false });
 
 /** The panels and popovers that take turns (one open at a time). */
-type Menu = "lighting" | "timer" | "fisheye" | "views" | "settings";
+type Menu = "lighting" | "timer" | "fisheye" | "views" | "settings" | "info" | "changelog";
 
 export function Studio() {
   const history = usePoseHistory();
@@ -80,6 +85,19 @@ export function Studio() {
   const closeTimer = useCallback(() => setTimerAnchor(null), []);
   const [viewsAnchor, setViewsAnchor] = useState<ViewsAnchor | null>(null);
   const closeViews = useCallback(() => setViewsAnchor(null), []);
+  const [infoAnchor, setInfoAnchor] = useState<PopoverAnchor | null>(null);
+  const closeInfo = useCallback(() => setInfoAnchor(null), []);
+  const [changelogAnchor, setChangelogAnchor] = useState<PopoverAnchor | null>(null);
+  const closeChangelog = useCallback(() => setChangelogAnchor(null), []);
+  // A dot on What's New until the newest release has been opened on this device.
+  const [unseenChanges, setUnseenChanges] = useState(false);
+  useEffect(() => {
+    // localStorage only exists in the browser, so read it after mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setUnseenChanges(hasUnseenChanges());
+  }, []);
+  // Mirror view (M): the stage flipped left to right, like flipping a canvas.
+  const flipped = useViewFlip();
   const sessionPhase = useSession((s) => s.phase);
   // The capsule takes the top bar's centre spot whenever it has something to show.
   const timing = capsulePhase(sessionPhase);
@@ -96,8 +114,7 @@ export function Studio() {
   // Lighting and the fish-eye lens belong to the open pose.
   usePoseLook(history, activeId, sessionHoldsStage);
   const refreshViewOnly = useCallback(() => {
-    const fisheye = perspective.ui().on;
-    poseStore.setViewOnly(focusRef.current || lightingUi.get().open || sessionHoldsStage.current || fisheye);
+    poseStore.setViewOnly(focusRef.current || lightingUi.get().open || sessionHoldsStage.current);
   }, []);
   /**
    * One menu at a time. Every button that opens a panel or popover calls
@@ -111,6 +128,8 @@ export function Studio() {
       if (keep !== "timer") setTimerAnchor(null);
       if (keep !== "views") setViewsAnchor(null);
       if (keep !== "settings") setSettingsAnchor(null);
+      if (keep !== "info") setInfoAnchor(null);
+      if (keep !== "changelog") setChangelogAnchor(null);
       if (keep !== "fisheye" && perspective.ui().open) perspective.setUi({ open: false });
       refreshViewOnly();
     },
@@ -174,10 +193,7 @@ export function Studio() {
   // off inside the menu, and stays as it is when the menu closes.
   const perspectiveOn = usePerspectiveUi((s) => s.on);
   const fisheyeMenuOpen = usePerspectiveUi((s) => s.open);
-  const setPerspective = useCallback((on: boolean) => {
-    if (on) poseStore.select(null);
-    perspective.toggle(on);
-  }, []);
+  const setPerspective = useCallback((on: boolean) => perspective.toggle(on), []);
   const toggleFisheyeMenu = useCallback(() => {
     if (perspective.ui().open) return perspective.setUi({ open: false });
     closeMenusExcept("fisheye");
@@ -185,13 +201,8 @@ export function Studio() {
     perspective.setUi({ open: true });
   }, [closeMenusExcept]);
   const closeFisheyeMenu = useCallback(() => perspective.setUi({ open: false }), []);
-  // The fish-eye image is bent, so a click wouldn't land on the part under
-  // it: posing pauses while it's on.
-  const fisheyeOn = perspectiveOn;
-  useEffect(() => {
-    if (fisheyeOn) poseStore.select(null);
-    refreshViewOnly();
-  }, [fisheyeOn, refreshViewOnly]);
+  // Posing carries on through the lens (clicks are traced through it: scene/lens.ts).
+  // Selecting a part brings up its inspector in the menu's place.
   useEffect(() => {
     if (jointSelected && perspective.ui().open) perspective.setUi({ open: false });
   }, [jointSelected]);
@@ -203,11 +214,28 @@ export function Studio() {
     },
     [settingsAnchor, closeMenusExcept],
   );
+  const toggleInfo = useCallback(
+    (trigger: HTMLElement) => {
+      if (infoAnchor) return setInfoAnchor(null);
+      closeMenusExcept("info");
+      setInfoAnchor({ rect: trigger.getBoundingClientRect(), returnFocus: trigger });
+    },
+    [infoAnchor, closeMenusExcept],
+  );
+  const toggleChangelog = useCallback(
+    (trigger: HTMLElement) => {
+      if (changelogAnchor) return setChangelogAnchor(null);
+      closeMenusExcept("changelog");
+      setChangelogAnchor({ rect: trigger.getBoundingClientRect(), returnFocus: trigger });
+      setUnseenChanges(false);
+    },
+    [changelogAnchor, closeMenusExcept],
+  );
 
   // Apply the theme and stage colour app-wide (the boot script did the
   // first paint; this keeps them in sync with Settings and the OS).
   const scheme = useScheme();
-  const { background, promptIdeas } = useSettings();
+  const { background, promptIdeas, showToolbar, showPromptBar } = useSettings();
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.scheme = scheme;
@@ -217,6 +245,20 @@ export function Studio() {
   const composer = useRef<ComposerHandle>(null);
 
   const active = history.entries.find((e) => e.id === activeId) ?? null;
+
+  // With the prompt bar hidden in Settings, / summons it; it steps back after
+  // sending, on Escape, or when left empty. A failed pose brings it up so
+  // Retry is in reach.
+  const [promptSummoned, setPromptSummoned] = useState(false);
+  const activeError = active ? generation.errors[active.id] : undefined;
+  const promptVisible = showPromptBar || promptSummoned || !!activeError;
+  const focusPrompt = useCallback(() => {
+    if (settingsStore.get().showPromptBar) return composer.current?.focus();
+    setPromptSummoned(true);
+    // Next frame: once the bar is interactive again.
+    requestAnimationFrame(() => composer.current?.focus());
+  }, []);
+  const dismissPrompt = useCallback(() => setPromptSummoned(false), []);
 
   /**
    * With a pose open, a prompt refines it (iterate until it's right);
@@ -235,6 +277,7 @@ export function Studio() {
         void generation.run(entry, prompt);
       }
       if (isCompact) setSidebarOpen(false);
+      setPromptSummoned(false);
     },
     [active, history, isCompact, generation],
   );
@@ -270,7 +313,8 @@ export function Studio() {
     if (!activeId) showLook(null);
     setActiveId(null);
     if (isCompact) setSidebarOpen(false);
-    composer.current?.focus();
+    // Ready to describe it (unless the prompt bar is hidden: / brings it up).
+    if (settingsStore.get().showPromptBar) composer.current?.focus();
   }, [isCompact, activeId]);
 
   const selectEntry = useCallback(
@@ -305,9 +349,21 @@ export function Studio() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target.closest("input:not([type=range]), textarea, [contenteditable=true], [role=menu], [role=dialog], [role=alertdialog]")) return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      // Undo / redo (Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y) reach the pose from anywhere
+      // except a field with text in it, where they undo the typing as usual.
+      // The prompt box is usually focused (after New pose or a prompt), so an
+      // empty one must not swallow them.
+      const field = target.closest<HTMLInputElement | HTMLTextAreaElement>("input:not([type=range]), textarea");
+      const editingText = (field && field.value !== "") || target.closest("[contenteditable=true], [role=alertdialog]");
+      if (mod && !e.altKey && (key === "z" || key === "y") && !editingText) {
+        e.preventDefault();
+        if (key === "y" || e.shiftKey) editing.redo();
+        else editing.undo();
+        return;
+      }
+      if (target.closest("input:not([type=range]), textarea, [contenteditable=true], [role=menu], [role=dialog], [role=alertdialog]")) return;
       if (mod && key === "z") {
         e.preventDefault();
         if (e.shiftKey) editing.redo();
@@ -337,9 +393,14 @@ export function Studio() {
         }
       }
       const preset = VIEW_ORDER[Number(e.key) - 1];
-      if (e.key === "/") {
+      if (e.key === "?") {
         e.preventDefault();
-        composer.current?.focus();
+        // Opens from whichever help button is on screen (sidebar or its collapsed corner).
+        const trigger = document.querySelector<HTMLElement>('button[aria-label="Shortcuts and tips"]');
+        if (trigger && !focusRef.current) toggleInfo(trigger);
+      } else if (e.key === "/") {
+        e.preventDefault();
+        focusPrompt();
       } else if (e.key === "Escape") {
         if (focusRef.current) setFocusMode(false);
         else if (lightingUi.get().open) setLighting(false);
@@ -359,11 +420,14 @@ export function Studio() {
         requestView(preset);
       } else if (key === "o" && target.tagName !== "INPUT") {
         toggleOutline();
+      } else if (key === "m" && target.tagName !== "INPUT") {
+        // Works with the interface hidden too: checking a drawing against a clean, flipped stage.
+        viewFlip.toggle();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [requestView, toggleOutline, editing, setFocusMode, setLighting, toggleTimer, toggleFisheyeMenu, toggleViews]);
+  }, [requestView, toggleOutline, editing, setFocusMode, setLighting, toggleTimer, toggleFisheyeMenu, toggleViews, toggleInfo, focusPrompt]);
 
   const contentInset = sidebarOpen && !isCompact && !focus ? SIDEBAR_SPACE : 0;
 
@@ -371,25 +435,27 @@ export function Studio() {
 
   const savedViews = active?.views ?? [];
 
-  /** A small JPEG of the visible stage (right of the sidebar), 16:10. */
-  const captureView = useCallback((): string | undefined => {
-    const canvas = document.querySelector<HTMLCanvasElement>("main canvas");
-    if (!canvas || !canvas.clientWidth) return undefined;
-    try {
-      const { width: W, height: H } = canvas;
-      const left = contentInset * (W / canvas.clientWidth);
-      const visibleW = W - left;
-      const cropW = Math.min(visibleW, H * 1.6);
-      const cropH = cropW / 1.6;
-      const out = document.createElement("canvas");
-      out.width = 192;
-      out.height = 120;
-      out.getContext("2d")?.drawImage(canvas, left + (visibleW - cropW) / 2, (H - cropH) / 2, cropW, cropH, 0, 0, 192, 120);
-      return out.toDataURL("image/jpeg", 0.72);
-    } catch {
-      return undefined;
-    }
-  }, [contentInset]);
+  /**
+   * Thumbnails always show the pose as it is now: whenever the menu opens
+   * (and for a newly saved angle), each angle is re-rendered from the live
+   * scene. The menu's own entrance covers the frame or two this takes.
+   */
+  const { setThumbs } = history;
+  const refreshThumbs = useCallback(
+    (poseId: string, views: SavedView[]) => {
+      void viewSnapshots.take(views).then((thumbs) => setThumbs(poseId, thumbs));
+    },
+    [setThumbs],
+  );
+  const activeRef = useRef(active);
+  useEffect(() => {
+    activeRef.current = active;
+  });
+  const viewsOpen = viewsAnchor !== null;
+  useEffect(() => {
+    const pose = activeRef.current;
+    if (viewsOpen && pose?.views?.length) refreshThumbs(pose.id, pose.views);
+  }, [viewsOpen, activeId, refreshThumbs]);
 
   const saveView = useCallback(() => {
     const camera = cameraBridge.get();
@@ -398,28 +464,26 @@ export function Studio() {
       id: crypto.randomUUID(),
       ...camera,
       fisheye: perspective.ui().on,
-      thumb: captureView(),
       createdAt: Date.now(),
     };
+    let poseId: string;
     if (active) {
+      poseId = active.id;
       history.update(active.id, { views: [...(active.views ?? []), view].slice(-MAX_VIEWS) });
     } else {
       // The default pose isn't saved yet: keep it (like editing it does), with this angle.
       const entry = { ...withCurrentLook(createUntitledEntry(poseStore.get().pose)), views: [view] };
+      poseId = entry.id;
       history.add(entry);
       setActiveId(entry.id);
     }
-  }, [active, history, captureView]);
+    refreshThumbs(poseId, [view]);
+  }, [active, history, refreshThumbs]);
 
   /** Glide back to a saved angle (switching the fish-eye lens on or off to match). */
   const goToView = useCallback((view: SavedView) => {
-    if (view.fisheye !== perspective.ui().on) {
-      fisheyeViews.setPending(view);
-      perspective.toggle(view.fisheye);
-      poseStore.select(null);
-    } else {
-      cameraBridge.go(view);
-    }
+    if (view.fisheye !== perspective.ui().on) perspective.toggle(view.fisheye);
+    cameraBridge.go(view);
   }, []);
 
   const deleteView = useCallback(
@@ -529,7 +593,8 @@ export function Studio() {
   return (
     <MotionConfig reducedMotion="user" transition={spring}>
       <main className="fixed inset-0 overflow-hidden bg-stage text-label">
-        <div className="absolute inset-0">
+        {/* Mirror view: the stage flipped left to right, instantly. */}
+        <div className="absolute inset-0" style={flipped ? { transform: "scaleX(-1)" } : undefined}>
           <Scene
             viewRequest={viewRequest}
             onUserInteract={onUserInteract}
@@ -577,6 +642,9 @@ export function Studio() {
               onNewPose={newPose}
               onCollapse={() => setSidebarOpen(false)}
               onSettings={toggleSettings}
+              onInfo={toggleInfo}
+              onChangelog={toggleChangelog}
+              unseenChanges={unseenChanges}
             />
           ) : (
             <CollapsedSidebarButtons
@@ -584,12 +652,17 @@ export function Studio() {
               onExpand={() => setSidebarOpen(true)}
               onNewPose={newPose}
               onSettings={toggleSettings}
+              onInfo={toggleInfo}
+              onChangelog={toggleChangelog}
+              unseenChanges={unseenChanges}
             />
           )}
         </AnimatePresence>
 
         <AnimatePresence>
           {settingsAnchor && <SettingsPanel key="settings" anchor={settingsAnchor} onClose={closeSettings} />}
+          {infoAnchor && <InfoPanel key="info" anchor={infoAnchor} onClose={closeInfo} />}
+          {changelogAnchor && <ChangelogPanel key="changelog" anchor={changelogAnchor} onClose={closeChangelog} />}
         </AnimatePresence>
 
         {/* Floating chrome centred over the visible stage. */}
@@ -609,12 +682,22 @@ export function Studio() {
                 <>
                   <StatusPill entry={active} onTogglePin={history.togglePin} result={generation.lastResult} />
                   {/* Posing is paused in lighting mode, so its hint would mislead. */}
-                  {/* Posing pauses with lighting or the fish-eye lens on: no posing hint then. */}
-                  <ControlsHint visible={!hasInteracted && !lightingOpen && !perspectiveOn} />
+                  <ControlsHint visible={!hasInteracted && !lightingOpen} />
                 </>
               )}
             </div>
-            <div className="flex items-center gap-2 justify-self-end">
+            {/* Hidden in Settings, the toolbar stays in place, just invisible and
+                untouchable: its shortcuts still work, and panels they open
+                still grow from where their buttons are. */}
+            <motion.div
+              className="flex items-center gap-2 justify-self-end"
+              initial={false}
+              animate={{ opacity: showToolbar ? 1 : 0 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+              inert={!showToolbar}
+              aria-hidden={!showToolbar || undefined}
+              style={{ pointerEvents: showToolbar ? undefined : "none" }}
+            >
               <HistoryControls
                 canUndo={editing.canUndo}
                 canRedo={editing.canRedo}
@@ -636,6 +719,20 @@ export function Studio() {
                 <Camera size={17} aria-hidden />
               </button>
               <ViewSwitcher value={view} onChange={requestView} />
+              <button
+                type="button"
+                onClick={() => viewFlip.toggle()}
+                aria-pressed={flipped}
+                aria-label="Mirror view"
+                data-tip={flipped ? "Mirror view: on" : "Mirror view"}
+                data-tip-kbd="M"
+                className={`pressable pointer-events-auto flex size-9 items-center justify-center rounded-full ${
+                  flipped ? "material text-accent" : "material text-label-2 hover:text-label"
+                }`}
+              >
+                {/* Lucide draws this icon as a top-to-bottom flip; turned a quarter it reads left-to-right. */}
+                <FlipHorizontal2 size={17} aria-hidden className="rotate-90" />
+              </button>
               <button
                 type="button"
                 onClick={toggleFisheyeMenu}
@@ -681,7 +778,7 @@ export function Studio() {
               >
                 <Timer size={17} aria-hidden />
               </button>
-            </div>
+            </motion.div>
           </div>
 
           <div className="relative min-h-0 flex-1 px-3">
@@ -711,22 +808,36 @@ export function Studio() {
 
           <div className="flex flex-col items-center gap-3 px-3 pt-3 pb-3 sm:pb-5">
             <UndoToast entry={deleted} onUndo={undoDelete} onDismiss={dismissToast} />
-            <Composer
-              ref={composer}
-              onSubmit={submitPrompt}
-              showSuggestions={promptIdeas && !active && !jointSelected}
-              placeholder={active ? `Refine “${active.title}”…` : "Describe a pose…"}
-              busy={active?.status === "posing"}
-              error={active ? generation.errors[active.id] : undefined}
-              onRetry={active ? () => generation.retry(active.id) : undefined}
-            />
+            {/* Hidden in Settings: it stays mounted (keeping anything typed)
+                and slides up when / summons it. */}
+            <motion.div
+              className="flex w-full justify-center"
+              initial={false}
+              animate={promptVisible ? { opacity: 1, y: 0 } : { opacity: 0, y: 16 }}
+              transition={{ type: "spring", bounce: 0, duration: 0.35 }}
+              inert={!promptVisible}
+              aria-hidden={!promptVisible || undefined}
+              style={{ pointerEvents: promptVisible ? undefined : "none" }}
+            >
+              <Composer
+                ref={composer}
+                onSubmit={submitPrompt}
+                onDismiss={dismissPrompt}
+                showSuggestions={promptIdeas && !active && !jointSelected}
+                placeholder={active ? `Refine “${active.title}”…` : "Describe a pose…"}
+                busy={active?.status === "posing"}
+                error={activeError}
+                onRetry={active ? () => generation.retry(active.id) : undefined}
+              />
+            </motion.div>
           </div>
         </motion.div>
         <HoverLabel />
         </motion.div>
 
         {/* During a pose session the interface stays hidden until it ends. */}
-        {!sessionLocked && <FocusToggle focus={focus} onChange={setFocusMode} />}
+        {/* Part of the toolbar: hidden with it in Settings (H still works). */}
+        {!sessionLocked && showToolbar && <FocusToggle focus={focus} onChange={setFocusMode} />}
 
         {/* With the interface hidden, the timer floats at the top of the stage. */}
         <TimerCapsule variant="floating" show={focus} inset={contentInset} />

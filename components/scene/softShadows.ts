@@ -30,9 +30,21 @@ import { ShaderChunk } from "three";
  * stays in place (with a warning in development).
  */
 
-/** The shadow camera every stage light uses (see StageLights): ±3 m wide, 7 m deep. */
+/**
+ * The shadow camera every stage light uses (see StageLights): ±3 m wide
+ * around the figure, and deep enough for the floor its shadow lands on.
+ * A low light throws the shadow far across the floor; that floor is far
+ * behind the figure along the light's direction, and anything past the far
+ * plane counts as unshadowed, so a short range cut long shadows off. The
+ * depth map is 24-bit, so 30-odd metres still resolves to a few microns;
+ * the biases below are in metres, so they're unaffected.
+ */
 export const SHADOW_HALF_SIZE = 3;
-export const SHADOW_DEPTH = 7;
+/** Metres from the figure's centre toward the light (raised arms, a lift). */
+export const SHADOW_NEAR_REACH = 3.5;
+/** Metres beyond it: past where fog hides the floor. */
+export const SHADOW_FAR_REACH = 32;
+export const SHADOW_DEPTH = SHADOW_NEAR_REACH + SHADOW_FAR_REACH;
 
 /** Steepest own-surface rise (tan) that never counts as a blocker. */
 const SELF_SLOPE = 1.2;

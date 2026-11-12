@@ -3,7 +3,7 @@ import { themeBootScript } from "@/lib/stage";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Strike a Pose",
+  title: "Strike A Pose",
   description: "Describe a pose in words and get a posed 3D mannequin for drawing reference.",
 };
 

@@ -2,6 +2,7 @@
 
 import {
   CircleAlert,
+  CircleHelp,
   Ellipsis,
   LoaderCircle,
   PanelLeftClose,
@@ -9,6 +10,7 @@ import {
   PersonStanding,
   Pin,
   Settings,
+  Sparkles,
   SquarePen,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
@@ -48,6 +50,10 @@ interface SidebarProps {
   onNewPose: () => void;
   onCollapse: () => void;
   onSettings: (trigger: HTMLElement) => void;
+  onInfo: (trigger: HTMLElement) => void;
+  onChangelog: (trigger: HTMLElement) => void;
+  /** A release hasn't been looked at yet (a dot on What's New). */
+  unseenChanges: boolean;
 }
 
 export function Sidebar({
@@ -63,6 +69,9 @@ export function Sidebar({
   onNewPose,
   onCollapse,
   onSettings,
+  onInfo,
+  onChangelog,
+  unseenChanges,
 }: SidebarProps) {
   const [menu, setMenu] = useState<MenuRequest | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -90,8 +99,8 @@ export function Sidebar({
       aria-label="Pose history"
     >
       <header className="flex items-center gap-2 px-3 pt-3 pb-2">
-        <Logo size={32} className="shrink-0 drop-shadow-[0_1px_2px_rgb(10_132_255/0.35)]" />
-        <h1 className="flex-1 text-[15px] font-semibold tracking-[-0.01em]">Strike a Pose</h1>
+        <Logo size={30} className="shrink-0" />
+        <h1 className="flex-1 text-[15px] font-semibold tracking-[-0.01em]">Strike A Pose</h1>
         <IconButton label="Hide sidebar" onClick={onCollapse}>
           <PanelLeftClose size={18} />
         </IconButton>
@@ -111,7 +120,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <nav className="scroll-fade min-h-0 flex-1 overflow-y-auto px-2 pt-2 pb-4" onScroll={closeMenu}>
+      <nav className="scroll-fade min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pt-2 pb-4" onScroll={closeMenu}>
         {hydrated && entries.length === 0 && <EmptyHistory />}
         <ul>
           <AnimatePresence initial={false}>
@@ -152,12 +161,12 @@ export function Sidebar({
         </ul>
       </nav>
 
-      <div className="px-2 pt-1 pb-2">
+      <div className="flex items-center gap-0.5 px-2 pt-1 pb-2">
         <button
           type="button"
           onClick={(e) => onSettings(e.currentTarget)}
           aria-haspopup="dialog"
-          className="pressable group/gear flex h-9 w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-label-2 hover:bg-fill hover:text-label active:bg-fill-strong"
+          className="pressable group/gear flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-[10px] px-2.5 text-left text-label-2 hover:bg-fill hover:text-label active:bg-fill-strong"
         >
           <Settings
             size={16}
@@ -166,6 +175,7 @@ export function Sidebar({
           />
           Settings
         </button>
+        <HelpButtons onInfo={onInfo} onChangelog={onChangelog} unseen={unseenChanges} side="top" />
       </div>
 
       <AnimatePresence>
@@ -384,17 +394,50 @@ export function IconButton({
   );
 }
 
+/** Shortcuts & tips, and What's New (with a dot while a release is unread). */
+function HelpButtons({
+  onInfo,
+  onChangelog,
+  unseen,
+  side,
+}: {
+  onInfo: (trigger: HTMLElement) => void;
+  onChangelog: (trigger: HTMLElement) => void;
+  unseen: boolean;
+  side: "top" | "bottom";
+}) {
+  return (
+    <>
+      <IconButton label="Shortcuts and tips" kbd="?" side={side} onClick={(e) => onInfo(e.currentTarget)}>
+        <CircleHelp size={17} />
+      </IconButton>
+      <IconButton label={unseen ? "What's New (updated)" : "What's New"} side={side} onClick={(e) => onChangelog(e.currentTarget)} className="relative">
+        <Sparkles size={17} />
+        {unseen && (
+          <span aria-hidden className="absolute top-1.5 right-1.5 size-2 rounded-full bg-accent shadow-[0_0_0_2px_var(--material)]" />
+        )}
+      </IconButton>
+    </>
+  );
+}
+
 /** What remains at the sidebar's origin when it's hidden, so it can return from there. */
 export function CollapsedSidebarButtons({
   ref,
   onExpand,
   onNewPose,
   onSettings,
+  onInfo,
+  onChangelog,
+  unseenChanges,
 }: {
   ref?: Ref<HTMLDivElement>;
   onExpand: () => void;
   onNewPose: () => void;
   onSettings: (trigger: HTMLElement) => void;
+  onInfo: (trigger: HTMLElement) => void;
+  onChangelog: (trigger: HTMLElement) => void;
+  unseenChanges: boolean;
 }) {
   return (
     <motion.div
@@ -417,6 +460,8 @@ export function CollapsedSidebarButtons({
           className="transition-transform duration-300 ease-out group-hover/gear:rotate-45"
         />
       </IconButton>
+      <span aria-hidden className="mx-0.5 my-1.5 w-px bg-fill-strong" />
+      <HelpButtons onInfo={onInfo} onChangelog={onChangelog} unseen={unseenChanges} side="bottom" />
     </motion.div>
   );
 }
