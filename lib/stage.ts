@@ -83,6 +83,8 @@ export interface Settings {
   showToolbar: boolean;
   /** The prompt bar at the bottom (when off, / brings it up). */
   showPromptBar: boolean;
+  /** The pose name at the top (while a pose is generating or has failed it still appears). */
+  showPoseName: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -95,6 +97,7 @@ export const DEFAULT_SETTINGS: Settings = {
   promptIdeas: true,
   showToolbar: true,
   showPromptBar: true,
+  showPoseName: true,
 };
 
 export const SETTINGS_KEY = "strike-a-pose:settings:v1";

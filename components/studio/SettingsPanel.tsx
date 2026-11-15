@@ -1,10 +1,10 @@
 "use client";
 
 import { X } from "lucide-react";
-import { motion } from "motion/react";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ColorDot, CustomColorDot } from "@/components/ui/ColorSwatches";
+import { ColorDot, CustomColorDot, InlineColorPicker } from "@/components/ui/ColorSwatches";
 import { Segmented, Switch } from "@/components/ui/Segmented";
 import {
   BACKGROUNDS,
@@ -191,6 +191,12 @@ export function SettingsPanel({ anchor, onClose }: { anchor: SettingsAnchor; onC
           >
             <Switch label="Prompt bar" on={settings.showPromptBar} onChange={(showPromptBar) => settingsStore.set({ showPromptBar })} />
           </DetailRow>
+          <DetailRow
+            label="Pose name"
+            detail={settings.showPoseName ? "The pose's name at the top of the stage" : "Hidden. Still shows while posing or on an error"}
+          >
+            <Switch label="Pose name" on={settings.showPoseName} onChange={(showPoseName) => settingsStore.set({ showPoseName })} />
+          </DetailRow>
           <DetailRow label="Pose ideas" detail="Suggestions above the prompt bar">
             <Switch label="Pose ideas" on={settings.promptIdeas} onChange={(promptIdeas) => settingsStore.set({ promptIdeas })} />
           </DetailRow>
@@ -242,6 +248,7 @@ function ColorRow<T extends string>({
   options: readonly { id: T; name: string; shortName?: string; hex: string; fill?: string }[];
   onChange: (id: T | HexColor) => void;
 }) {
+  const [picking, setPicking] = useState(false);
   const custom = isHex(value);
   const chosen = options.find((o) => o.id === value);
   return (
@@ -258,9 +265,20 @@ function ColorRow<T extends string>({
           label={`Custom ${label.toLowerCase()}`}
           value={current}
           on={custom}
-          onChange={(hex) => isHex(hex) && onChange(hex)}
+          open={picking}
+          onToggle={() => setPicking((p) => !p)}
         />
       </div>
+      <AnimatePresence initial={false}>
+        {picking && (
+          <InlineColorPicker
+            label={`Custom ${label.toLowerCase()}`}
+            value={current}
+            onChange={(hex) => isHex(hex) && onChange(hex)}
+            onClose={() => setPicking(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

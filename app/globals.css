@@ -181,13 +181,43 @@ button:active > .swatch { transform: scale(0.96); }
 .swatch-on {
   box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 0 0 2px var(--material), 0 0 0 4px var(--accent);
 }
-button:focus-visible > .swatch,
-.swatch-picker:has(input:focus-visible) {
+button:focus-visible > .swatch {
   box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 0 0 2px var(--material), 0 0 0 4px var(--accent-fill), 0 0 0 5px var(--accent);
 }
-/* The custom-colour swatch is its own target (a label around the picker). */
-.swatch-picker:hover { transform: scale(1.06); }
-.swatch-picker:active { transform: scale(0.96); }
+
+/* Hue slider of the custom colour picker: the spectrum is the track. */
+.hue-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+  background: linear-gradient(to right, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00);
+  box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.16);
+}
+.hue-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 0;
+  box-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.3), 0 1px 4px rgb(0 0 0 / 0.35);
+}
+.hue-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 0;
+  box-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.3), 0 1px 4px rgb(0 0 0 / 0.35);
+}
+.hue-range:focus-visible {
+  box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 0 0 2px var(--accent);
+}
 
 /* Height readout beside the lift guide. */
 .lift-badge {

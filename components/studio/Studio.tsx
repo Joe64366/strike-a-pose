@@ -168,6 +168,21 @@ export function Studio() {
   );
   const closeLighting = useCallback(() => setLighting(false), [setLighting]);
 
+  const { background, promptIdeas, showToolbar, showPromptBar, showPoseName } = useSettings();
+
+  /**
+   * Where a toolbar panel grows from. With the toolbar hidden its buttons
+   * are invisible, so the panel comes in from the right edge of the top bar
+   * instead (where the lighting and fish-eye panels already sit).
+   */
+  const toolbarAnchor = useCallback(
+    (trigger: HTMLElement): { rect: DOMRect; returnFocus: HTMLElement | null } =>
+      showToolbar
+        ? { rect: trigger.getBoundingClientRect(), returnFocus: trigger }
+        : { rect: new DOMRect(window.innerWidth - 12, 12, 0, 36), returnFocus: null },
+    [showToolbar],
+  );
+
   // The drawing timer's setup popover, from its top-bar button (or T).
   const timerButton = useRef<HTMLButtonElement>(null);
   const toggleTimer = useCallback(() => {
@@ -175,8 +190,8 @@ export function Studio() {
     if (!trigger) return;
     if (timerAnchor) return setTimerAnchor(null);
     closeMenusExcept("timer");
-    setTimerAnchor({ rect: trigger.getBoundingClientRect(), returnFocus: trigger });
-  }, [timerAnchor, closeMenusExcept]);
+    setTimerAnchor(toolbarAnchor(trigger));
+  }, [timerAnchor, closeMenusExcept, toolbarAnchor]);
 
   // Exact views kept with the open pose, to come back to after orbiting away.
   const viewsButton = useRef<HTMLButtonElement>(null);
@@ -185,8 +200,8 @@ export function Studio() {
     if (!trigger) return;
     if (viewsAnchor) return setViewsAnchor(null);
     closeMenusExcept("views");
-    setViewsAnchor({ rect: trigger.getBoundingClientRect(), returnFocus: trigger });
-  }, [viewsAnchor, closeMenusExcept]);
+    setViewsAnchor(toolbarAnchor(trigger));
+  }, [viewsAnchor, closeMenusExcept, toolbarAnchor]);
 
   // Fish-eye lens: curvilinear perspective, with optional guide lines. Its
   // button (or P) opens its menu like any other; the lens is switched on and
@@ -235,7 +250,6 @@ export function Studio() {
   // Apply the theme and stage colour app-wide (the boot script did the
   // first paint; this keeps them in sync with Settings and the OS).
   const scheme = useScheme();
-  const { background, promptIdeas, showToolbar, showPromptBar } = useSettings();
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.scheme = scheme;
@@ -680,15 +694,28 @@ export function Studio() {
                 <TimerCapsule variant="docked" show={!focus} />
               ) : (
                 <>
-                  <StatusPill entry={active} onTogglePin={history.togglePin} result={generation.lastResult} />
+                  {/* Hidden in Settings, the name steps aside, but progress and
+                      errors still show: they're feedback, not decoration. */}
+                  <AnimatePresence initial={false}>
+                    {(showPoseName || active?.status === "posing" || active?.status === "error") && (
+                      <motion.div
+                        key="status"
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                      >
+                        <StatusPill entry={active} onTogglePin={history.togglePin} result={generation.lastResult} />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                   {/* Posing is paused in lighting mode, so its hint would mislead. */}
                   <ControlsHint visible={!hasInteracted && !lightingOpen} />
                 </>
               )}
             </div>
             {/* Hidden in Settings, the toolbar stays in place, just invisible and
-                untouchable: its shortcuts still work, and panels they open
-                still grow from where their buttons are. */}
+                untouchable: its shortcuts still work, and the panels they open
+                grow from the top right (toolbarAnchor). */}
             <motion.div
               className="flex items-center gap-2 justify-self-end"
               initial={false}
