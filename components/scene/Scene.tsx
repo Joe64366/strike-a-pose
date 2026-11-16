@@ -7,7 +7,7 @@ import {
   Lightformer,
 } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { DoubleSide, Vector3, type PerspectiveCamera } from "three";
+import { DoubleSide, Vector3, type Material, type Mesh, type PerspectiveCamera } from "three";
 import { Suspense, useCallback, useEffect, useRef } from "react";
 import { cameraBridge } from "@/lib/cameraViews";
 import { lightingUi, useLighting } from "@/lib/lighting";
@@ -33,6 +33,11 @@ export interface SceneProps {
   onReady?: () => void;
   /** Pixels covered by UI on the left; the figure stays centred in what's left. */
   leftInset?: number;
+}
+
+/** drei's Grid keeps its material to itself, so depth writes are switched off here. */
+function skipDepthWrite(mesh: Mesh | null) {
+  if (mesh) (mesh.material as Material).depthWrite = false;
 }
 
 export default function Scene({ viewRequest, onUserInteract, onReady, leftInset = 0 }: SceneProps) {
@@ -69,6 +74,12 @@ export default function Scene({ viewRequest, onUserInteract, onReady, leftInset 
       {settings.grid && (
         <Grid
           position={[0, 0.001, 0]}
+          // The grid, the shadow catcher below and the floor are within a
+          // millimetre of each other, so depth can't order them: at range they
+          // z-fight and the lines flicker. Draw order decides instead
+          // (grid, then shadow over it), and neither writes depth.
+          renderOrder={1}
+          ref={skipDepthWrite}
           args={[40, 40]}
           infiniteGrid
           cellSize={0.25}
@@ -86,9 +97,9 @@ export default function Scene({ viewRequest, onUserInteract, onReady, leftInset 
 
       {/* Invisible floor that only shows the figure's shadow: out to where
           fog hides the floor, so a low light's long shadow never ends at its edge. */}
-      <mesh rotation-x={-Math.PI / 2} position={[0, 0.002, 0]} receiveShadow>
+      <mesh rotation-x={-Math.PI / 2} position={[0, 0.002, 0]} receiveShadow renderOrder={2}>
         <planeGeometry args={[2 * 40, 2 * 40]} />
-        <shadowMaterial transparent opacity={c.shadowOpacity} />
+        <shadowMaterial transparent opacity={c.shadowOpacity} depthWrite={false} />
       </mesh>
 
       <Suspense fallback={null}>

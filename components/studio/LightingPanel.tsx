@@ -2,7 +2,7 @@
 
 import { FlipHorizontal2, RotateCcw, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { springSnappy } from "@/lib/motion";
 import {
   describeDirection,
@@ -21,7 +21,7 @@ import {
 } from "@/lib/lighting";
 import { bodyHex, silhouetteHex, stageColor, useScheme, useSettings } from "@/lib/settings";
 import { useViewFlip } from "@/lib/viewFlip";
-import { ColorDot, CustomColorDot } from "@/components/ui/ColorSwatches";
+import { ColorDot, CustomColorDot, InlineColorPicker } from "@/components/ui/ColorSwatches";
 import { Segmented, Switch } from "@/components/ui/Segmented";
 import { BallThumb, LightBall } from "./LightBall";
 
@@ -54,6 +54,7 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
   const mirrored = useViewFlip();
   const set = (patch: Parameters<typeof lightingStore.setLight>[1]) => lightingStore.setLight(selected, patch);
   const customColor = !LIGHT_COLORS.some((c) => c.hex === spec.color);
+  const [picking, setPicking] = useState(false);
 
   return (
     <motion.section
@@ -213,9 +214,20 @@ export function LightingPanel({ className = "", onClose }: { className?: string;
                 label="Custom light color"
                 value={spec.color}
                 on={customColor}
-                onChange={(color) => set({ color })}
+                open={picking}
+                onToggle={() => setPicking((p) => !p)}
               />
             </div>
+            <AnimatePresence initial={false}>
+              {picking && (
+                <InlineColorPicker
+                  label="Custom light color"
+                  value={spec.color}
+                  onChange={(color) => set({ color })}
+                  onClose={() => setPicking(false)}
+                />
+              )}
+            </AnimatePresence>
           </div>
 
           <div>
