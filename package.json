@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "build:poses": "tsx scripts/build-pose-library.ts"
+    "build:poses": "tsx scripts/build-pose-library.ts",
+    "import:cmu": "tsx scripts/import-cmu.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

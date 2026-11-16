@@ -1,6 +1,6 @@
 import { Quaternion, Vector3, type Object3D } from "three";
 import type { Gaze, Reach, SolveRequest } from "@/lib/ai/targets";
-import { JOINT_BY_ID, type AxisKey, type JointId } from "@/lib/joints";
+import { fingerJoints, handShapeAngles, JOINT_BY_ID, type AxisKey, type JointId } from "@/lib/joints";
 import { compose, decompose, type PoseData } from "@/lib/poseMath";
 import type { Rig } from "./rig";
 
@@ -39,11 +39,65 @@ const DEG = Math.PI / 180;
 /** How far the palm's centre is from the wrist (metres). */
 const PALM = 0.07;
 
+/**
+ * The body parts an arm must stay outside of. Each is a rounded shape along
+ * its bone, measured from the mannequin's own mesh: an elliptical cross-
+ * section (the chest is wider than it is deep, the face sticks out forward).
+ */
+const SOLID: JointId[] = ["hips", "spine", "chest", "neck", "head", "leftThigh", "rightThigh", "leftShin", "rightShin"];
+interface Solid {
+  id: JointId;
+  /** Extent along the bone, as fractions of its length. */
+  t0: number;
+  t1: number;
+  /** Half-widths toward the character's left/right and front/back (world units). */
+  left: number;
+  right: number;
+  front: number;
+  back: number;
+}
+/** Reaches where the hand closes into a loose fist whatever shape was asked (it rests against the body). */
+const FIST_REACHES = new Set<Reach>(["chin"]);
+/** Light contact is fine (a hand on the cheek); only sinking in beyond this counts (metres). */
+const CONTACT_SLACK = 0.008;
+/** Points along each arm (fraction of the segment, thickness in metres). */
+const UPPER_ARM_POINTS: [number, number][] = [
+  [0.55, 0.042],
+  [0.8, 0.04],
+  [1, 0.038],
+];
+const FOREARM_POINTS: [number, number][] = [
+  [0.33, 0.036],
+  [0.66, 0.032],
+  [1, 0.028],
+];
+
+function percentile(xs: number[], p: number) {
+  if (!xs.length) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(p * s.length))];
+}
+
+/** A bone's direction, and the character's left and forward squared up across it. */
+function across(A: V3, B: V3, left: V3, forward: V3) {
+  const axis = B.clone().sub(A).normalize();
+  const l = left.clone().addScaledVector(axis, -left.dot(axis));
+  if (l.lengthSq() < 1e-6) l.copy(forward).cross(axis);
+  l.normalize();
+  const f = axis.clone().cross(l);
+  if (f.dot(forward) < 0) f.negate();
+  return { axis, l, f };
+}
+
 export interface PoseSolver {
   /** `pose` with arms, neck and head adjusted to meet the request. */
   solve(pose: PoseData, request: SolveRequest): PoseData;
   /** Named body points of `pose` in metres (floor-relative heights not applied), for checks. */
   landmarks(pose: PoseData): Record<string, Vector3>;
+  /** How far the arms and hands sink into the body, beyond light contact (metres, root of summed squares). */
+  sinking(pose: PoseData): number;
+  /** The body's collision shapes (half-widths in metres), for checking the fit. */
+  solids(): (Solid & { id: JointId })[];
 }
 
 export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
@@ -68,8 +122,45 @@ export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
     left: { upper: segment("leftUpperArm", "leftForearm"), fore: segment("leftForearm", "leftHand") },
     right: { upper: segment("rightUpperArm", "rightForearm"), fore: segment("rightForearm", "rightHand") },
   };
+  const solids = fitSolids();
   rig.restore(before);
   root.updateMatrixWorld(true);
+  rig.skin({ updatePick: true }); // fitting borrowed the hit-test mesh; put it back as shown
+
+  /** Each body part's shape around its bone, from the skin it owns (at rest, facing +Z). */
+  function fitSolids(): Solid[] {
+    rig.skin({ updatePick: true });
+    rig.pick.updateMatrixWorld(true);
+    const P = rig.pick.geometry.attributes.position;
+    const out: Solid[] = [];
+    for (const id of SOLID) {
+      const joint = rig.byId[id];
+      if (!joint) continue;
+      const A = joint.bone.getWorldPosition(new Vector3());
+      const len = joint.tip.getWorldPosition(new Vector3()).sub(A).length();
+      const { axis, l, f } = across(A, joint.tip.getWorldPosition(new Vector3()), LEFT, FORWARD);
+      const ts: number[] = [];
+      const ls: number[] = [];
+      const rs: number[] = [];
+      const fs: number[] = [];
+      const bs: number[] = [];
+      const p = new Vector3();
+      for (let i = 0; i < P.count; i++) {
+        if (rig.vertexJoint[i] !== joint.index) continue;
+        p.fromBufferAttribute(P, i).applyMatrix4(rig.pick.matrixWorld).sub(A);
+        ts.push(p.dot(axis) / len);
+        const ol = p.dot(l);
+        const of = p.dot(f);
+        (ol >= 0 ? ls : rs).push(Math.abs(ol));
+        (of >= 0 ? fs : bs).push(Math.abs(of));
+      }
+      if (ts.length < 20) continue;
+      // A little inside the skin's outer edge, so touching isn't sinking.
+      const half = (xs: number[]) => percentile(xs, 0.8) * 0.92;
+      out.push({ id, t0: percentile(ts, 0.04), t1: percentile(ts, 0.96), left: half(ls), right: half(rs), front: half(fs), back: half(bs) });
+    }
+    return out;
+  }
 
   /* ------------------------------------------------------------ helpers */
 
@@ -149,10 +240,125 @@ export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
   }
   const cross = (a: number[], b: number[]) => a.flatMap((x) => b.map((y) => [x, y]));
 
+  /* ----------------------------------------------------------- collision */
+
+  interface Placed {
+    s: Solid;
+    A: V3;
+    axis: V3;
+    len: number;
+    l: V3;
+    f: V3;
+  }
+  let placed: Placed[] = [];
+  /** Where the body parts are now (moving an arm doesn't move them). */
+  function placeSolids() {
+    placed = solids.map((s) => {
+      const A = pos(s.id);
+      const B = j(s.id).tip.getWorldPosition(new Vector3());
+      const fr = frame(s.id);
+      return { s, A, len: B.distanceTo(A), ...across(A, B, fr.l, fr.f) };
+    });
+  }
+  /** How deep a ball (centre p, radius r, world units) sinks into the body: squared, summed over parts. */
+  function sink(p: V3, r: number) {
+    let sum = 0;
+    for (const { s, A, axis, len, l, f } of placed) {
+      const o = p.clone().sub(A);
+      const t = Math.min(s.t1 * len, Math.max(s.t0 * len, o.dot(axis)));
+      o.addScaledVector(axis, -t);
+      const ol = o.dot(l);
+      const of = o.dot(f);
+      const perp = Math.hypot(ol, of);
+      const a = ol >= 0 ? s.left : s.right;
+      const b = of >= 0 ? s.front : s.back;
+      // The ellipse's radius in this direction.
+      const R = perp < 1e-9 ? Math.min(a, b) : 1 / Math.hypot(ol / perp / a, of / perp / b);
+      const depth = R + r - o.length() - CONTACT_SLACK * m;
+      if (depth > 0) sum += depth * depth;
+    }
+    return sum;
+  }
+  const bonePos = (id: JointId, tip = false) => {
+    const k = rig.byId[id];
+    return k ? (tip ? k.tip : k.bone).getWorldPosition(new Vector3()) : null;
+  };
+  /** The palm and fingers (middle finger and thumb, the ones that stick out). */
+  function handSink(side: Side) {
+    const W = pos(`${side}Hand`);
+    const M1 = bonePos(`${side}Middle1`);
+    const M3 = bonePos(`${side}Middle3`);
+    const tip = bonePos(`${side}Middle3`, true);
+    const thumb = bonePos(`${side}Thumb3`, true);
+    if (!M1 || !M3 || !tip) return 0;
+    return (
+      sink(W.lerp(M1, 0.5), 0.03 * m) +
+      sink(M1, 0.024 * m) +
+      sink(M3, 0.016 * m) +
+      sink(tip, 0.012 * m) +
+      (thumb ? sink(thumb, 0.013 * m) : 0)
+    );
+  }
+  /** The whole arm: upper arm (past the shoulder, which belongs to the torso), forearm and hand. */
+  function armSink(side: Side) {
+    const S = pos(`${side}UpperArm`);
+    const E = pos(`${side}Forearm`);
+    const W = pos(`${side}Hand`);
+    let sum = handSink(side);
+    for (const [t, r] of UPPER_ARM_POINTS) sum += sink(S.clone().lerp(E, t), r * m);
+    for (const [t, r] of FOREARM_POINTS) sum += sink(E.clone().lerp(W, t), r * m);
+    return sum;
+  }
+  /** Sinking costs this much more than missing a target by the same distance. */
+  const SINK_WEIGHT = 8;
+  /** Per degree² moved, as a cost: 10° ≈ half a centimetre of sinking. */
+  const MOVE = () => 2.5e-7 * m * m;
+
+  /** Lay the hand along the surface it touches instead of through it (wrist bend and tilt). */
+  function settleHand(side: Side): boolean {
+    const hand: JointId = `${side}Hand`;
+    if (handSink(side) === 0) return false;
+    const [b0, t0, tw] = get(hand);
+    search(
+      cross([b0 - 50, b0 - 25, b0, b0 + 25, b0 + 50], [t0 - 20, t0, t0 + 20]),
+      [limits(hand, "bend"), limits(hand, "tilt")],
+      ([b, t]) => {
+        put(hand, [b, t, tw]);
+        return SINK_WEIGHT * handSink(side) + MOVE() * ((b - b0) ** 2 + (t - t0) ** 2);
+      },
+      8,
+    );
+    return true;
+  }
+
+  /** An arm the model posed freely, moved the least it takes to come out of the body. */
+  function unstick(side: Side): boolean {
+    const ua: JointId = `${side}UpperArm`;
+    const fa: JointId = `${side}Forearm`;
+    let moved = false;
+    if (armSink(side) > (0.004 * m) ** 2) {
+      const a0 = get(ua);
+      const e0 = get(fa);
+      search(
+        [[a0[0], a0[1], a0[2], e0[0]]],
+        [limits(ua, "bend"), limits(ua, "tilt"), limits(ua, "twist"), limits(fa, "bend")],
+        ([sw, ra, tw, el]) => {
+          put(ua, [sw, ra, tw]);
+          put(fa, [el, 0, e0[2]]);
+          const moved2 = (sw - a0[0]) ** 2 + (ra - a0[1]) ** 2 + (tw - a0[2]) ** 2 + (el - e0[0]) ** 2;
+          return SINK_WEIGHT * armSink(side) + MOVE() * moved2;
+        },
+        10,
+      );
+      moved = true;
+    }
+    return settleHand(side) || moved;
+  }
+
   /* ------------------------------------------------------------- reaches */
 
-  /** Where the palm should land, and which way the elbow should point. */
-  function goal(side: Side, reach: Reach, floorY: number): { palm: V3; pole: V3 } | null {
+  /** Where the palm should land, which way the elbow should point, and (optionally) the fingers. */
+  function goal(side: Side, reach: Reach, floorY: number): { palm: V3; pole: V3; fingers?: V3 } | null {
     const s = side === "left" ? 1 : -1;
     const other: Side = side === "left" ? "right" : "left";
     const head = frame("head");
@@ -178,9 +384,16 @@ export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
       case "eyes":
         return { palm: at(H, [head.u, 0.11], [head.f, 0.12], [head.l, 0.04 * s]), pole: elbowDown };
       case "mouth":
-        return { palm: at(H, [head.u, 0.035], [head.f, 0.14]), pole: elbowDown };
+        // The palm low on the face so its middle covers the mouth, fingers
+        // slanting across the cheek (not straight up over the eyes).
+        return {
+          palm: at(H, [head.u, -0.035], [head.f, 0.13], [head.l, 0.02 * s]),
+          pole: elbowDown,
+          fingers: at(new Vector3(), [head.l, -0.75 * s], [head.u, 0.65]),
+        };
       case "chin":
-        return { palm: at(H, [head.u, -0.01], [head.f, 0.12]), pole: elbowDown };
+        // A loose fist under the chin (see `FIST_REACHES`): long fingers would cover the face.
+        return { palm: at(H, [head.u, -0.02], [head.f, 0.12]), pole: elbowDown };
       case "forehead":
         return { palm: at(H, [head.u, 0.15], [head.f, 0.12]), pole: at(new Vector3(), [chest.l, s], [chest.u, -0.4]) };
       case "top_of_head":
@@ -192,7 +405,7 @@ export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
       case "chest":
         return { palm: at(N, [chest.u, -0.15], [chest.f, 0.14], [chest.l, 0.06 * s]), pole: elbowDown };
       case "heart":
-        return { palm: at(N, [chest.u, -0.17], [chest.f, 0.14], [chest.l, 0.07]), pole: elbowDown };
+        return { palm: at(N, [chest.u, -0.17], [chest.f, 0.16], [chest.l, 0.07]), pole: elbowDown };
       case "stomach":
         return { palm: at(pos("spine"), [frame("spine").u, 0.04], [frame("spine").f, 0.15], [frame("spine").l, 0.03 * s]), pole: elbowDown };
       case "hip":
@@ -207,7 +420,7 @@ export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
         // other elbow (the left arm on top). Fixed to the body, not to the
         // other arm, which may not be in place yet.
         return {
-          palm: at(N, [chest.u, -0.3], [chest.f, side === "left" ? 0.17 : 0.12], [chest.l, -0.17 * s]),
+          palm: at(N, [chest.u, -0.3], [chest.f, side === "left" ? 0.21 : 0.16], [chest.l, -0.17 * s]),
           pole: at(new Vector3(), [chest.u, -1], [chest.l, 0.35 * s]),
         };
       case "hug_knees": {
@@ -289,7 +502,7 @@ export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
       ([tw, el]) => {
         put(ua, [swing, raise, tw]);
         put(fa, [el, 0, foreTwist]);
-        return pos(hand).distanceToSquared(T);
+        return pos(hand).distanceToSquared(T) + SINK_WEIGHT * armSink(side);
       },
     );
     // 3. All four together: the wrist exactly on target, the elbow kept natural.
@@ -299,12 +512,36 @@ export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
       ([sw, ra, tw, el]) => {
         put(ua, [sw, ra, tw]);
         put(fa, [el, 0, foreTwist]);
-        return pos(hand).distanceToSquared(T) + 0.15 * pos(fa).distanceToSquared(E);
+        return pos(hand).distanceToSquared(T) + 0.15 * pos(fa).distanceToSquared(E) + SINK_WEIGHT * armSink(side);
       },
       4,
     );
-    // The hand lines up with the forearm (the model's wrist bend is for free arms).
+    // The hand lines up with the forearm (the model's wrist bend is for free
+    // arms), or turns its fingers the way the target asks; either way it
+    // bends at the wrist rather than go into the body.
     put(hand, [0, 0, 0]);
+    if (FIST_REACHES.has(reach)) for (const f of handShapeAngles(side, "fist")) put(f.id, [f.bend, f.tilt, 0]);
+    if (g.fingers) pointFingers(side, g.fingers.normalize());
+    settleHand(side);
+  }
+
+  /** Forearm twist and wrist bend/tilt so the fingers run along `dir`, staying out of the body. */
+  function pointFingers(side: Side, dir: V3) {
+    const fa: JointId = `${side}Forearm`;
+    const hand: JointId = `${side}Hand`;
+    const [el, , tw0] = get(fa);
+    const knuckle = `${side}Middle1` as JointId;
+    search(
+      cross([-60, 0, 60], [-50, 0, 50]).map(([tw, b]) => [tw, b, 0]),
+      [limits(fa, "twist"), limits(hand, "bend"), limits(hand, "tilt")],
+      ([tw, b, t]) => {
+        put(fa, [el, 0, tw]);
+        put(hand, [b, t, 0]);
+        const along = (bonePos(knuckle) ?? pos(hand)).sub(pos(hand)).normalize();
+        return (1 - along.dot(dir)) * 0.02 * m * m + SINK_WEIGHT * handSink(side) + MOVE() * 0.2 * (tw - tw0) ** 2;
+      },
+      10,
+    );
   }
 
   /* ---------------------------------------------------------------- gaze */
@@ -382,26 +619,32 @@ export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
   }
 
   function solve(pose: PoseData, req: SolveRequest): PoseData {
-    if (req.leftReach === "none" && req.rightReach === "none" && req.gaze === "none") return pose;
     const snap = rig.snapshot();
     try {
       begin(pose);
       const floorY = rig.skin({ step: 3 });
       const touched = new Set<JointId>();
-      const reachBoth = () => {
-        for (const side of ["left", "right"] as const) {
-          const r = side === "left" ? req.leftReach : req.rightReach;
-          if (r === "none") continue;
-          reachTo(side, r, floorY);
-          touched.add(`${side}UpperArm`).add(`${side}Forearm`).add(`${side}Hand`);
-        }
-      };
+      const armOf = (side: Side): JointId[] => [`${side}UpperArm`, `${side}Forearm`, `${side}Hand`];
+      const reachOf = (side: Side) => (side === "left" ? req.leftReach : req.rightReach);
       const lookAtHand = req.gaze === "at_left_hand" || req.gaze === "at_right_hand";
       if (!lookAtHand && req.gaze !== "none") look(req.gaze);
+      placeSolids();
       // Every target is fixed to the body (never to the other arm), so one pass places both.
-      reachBoth();
+      for (const side of ["left", "right"] as const) {
+        if (reachOf(side) === "none") continue;
+        reachTo(side, reachOf(side), floorY);
+        armOf(side).forEach((id) => touched.add(id));
+        if (FIST_REACHES.has(reachOf(side))) fingerJoints(side).forEach((id) => touched.add(id));
+      }
       if (lookAtHand) look(req.gaze);
       if (req.gaze !== "none") touched.add("neck").add("head");
+      // Arms the model posed freely mustn't pass through the body either, and
+      // a turned head can meet a hand that was clear of it.
+      placeSolids();
+      for (const side of ["left", "right"] as const) {
+        const changed = reachOf(side) === "none" ? unstick(side) : settleHand(side);
+        if (changed) armOf(side).forEach((id) => touched.add(id));
+      }
 
       const out: PoseData = { ...pose };
       for (const id of touched) {
@@ -462,5 +705,17 @@ export function createPoseSolver(rig: Rig, root: Object3D): PoseSolver {
     }
   }
 
-  return { solve, landmarks };
+  function sinking(pose: PoseData) {
+    const snap = rig.snapshot();
+    try {
+      begin(pose);
+      placeSolids();
+      return Math.sqrt(armSink("left") + armSink("right")) / m;
+    } finally {
+      rig.restore(snap);
+      root.updateMatrixWorld(true);
+    }
+  }
+
+  return { solve, landmarks, sinking, solids: () => solids.map((s) => ({ ...s, left: s.left / m, right: s.right / m, front: s.front / m, back: s.back / m })) };
 }

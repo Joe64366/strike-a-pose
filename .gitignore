@@ -40,5 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Raw Mixamo animation downloads (Adobe terms: do not redistribute)
-/data/mixamo/
+# Raw CMU motion-capture clips (too large for git).
+# Only the derived joint angles in lib/ai/poseLibrary.json are committed.
+/data/cmu/
